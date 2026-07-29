@@ -626,6 +626,10 @@ function extractPartyGstin(lines: string[], partyName: string): string {
 function extractPartyName(lines: string[], gstin: string): string {
   const partyLabels = ['billing address', 'bill to', 'ship to', 'sold to', 'customer', 'buyer', 'recipient', 'to:', 'from:'];
   const sellerTerms = /(seller|merchant|supplier|company|traders|services|gstin|invoice|bill|voucher|date|amount|total|tax|hsn|qty|rate|address)/i;
+  // Narrower filter for text on the SAME line as the label (e.g. "Bill To: Acme Traders").
+  // Excludes common Indian business-name suffixes (Traders/Services/Company/Enterprises) so real
+  // customer names aren't dropped just because they contain those words.
+  const sameLineHeaderTerms = /(gstin|invoice|voucher|date|amount|total|tax|hsn|qty|rate|address|seller|merchant|supplier)/i;
 
   for (let i = 0; i < lines.length; i += 1) {
     const lowerLine = lines[i].toLowerCase();
@@ -634,11 +638,11 @@ function extractPartyName(lines: string[], gstin: string): string {
     for (const label of partyLabels) {
       if (!lowerLine.includes(label)) continue;
       
-      // Try to extract from the same line first (e.g., "Bill To Miyuro")
+      // Try to extract from the same line first (e.g., "Bill To Miyuro" or "Bill To: Acme Traders")
       const labelIndex = lowerLine.indexOf(label);
-      const afterLabel = lines[i].substring(labelIndex + label.length).trim();
+      const afterLabel = lines[i].substring(labelIndex + label.length).replace(/^[\s:=-]+/, '').trim();
       
-      if (afterLabel && !sellerTerms.test(afterLabel) && afterLabel.length >= 3 && 
+      if (afterLabel && !sameLineHeaderTerms.test(afterLabel) && afterLabel.length >= 3 && 
           !/\b\d{4,}\b|^\d+$|plot no|flat|floor|city|state|postal|pin|^[a-z]{2}\d{4,}\b/i.test(afterLabel)) {
         return afterLabel.replace(/^m\/s\s+/i, '').trim();
       }

@@ -1,0 +1,6 @@
+{
+  "name": "Byalance",
+  "description": "Byalance Compliance - India Statutory File Generator for GST, TDS, and Payroll (PF ECR, ESI, Professional Tax)",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

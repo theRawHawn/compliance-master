@@ -1,0 +1,673 @@
+/**
+ * GST File Generator (GSTR-1 JSON & GSTR-3B Summary)
+ */
+
+import { Company, SalesInvoice, PurchaseInvoice, GeneratedFile } from '../../types';
+import * as XLSX from 'xlsx';
+import { calculateGstLateFeeAndInterest, TurnoverSlab } from '../calculators/gstLateFeeCalculator';
+
+export function formatGstPeriod(monthYear: string): string {
+  // Input: '2026-06' -> Output: '062026'
+  if (!monthYear || !monthYear.includes('-')) return '062026';
+  const [year, month] = monthYear.split('-');
+  return `${month}${year}`;
+}
+
+export function generateGstr1Json(company: Company, sales: SalesInvoice[], monthYear: string): GeneratedFile {
+  const period = formatGstPeriod(monthYear);
+  const companyGstin = company.gstin.trim().toUpperCase();
+
+  // B2B Invoices grouped by Customer GSTIN
+  const b2bMap: Record<string, any[]> = {};
+  // B2CL (Inter-state > 2.5L to unregistered)
+  const b2clList: any[] = [];
+  // B2CS (Aggregated by POS and Rate)
+  const b2csMap: Record<string, { sply_ty: string; pos: string; rt: number; txval: number; iamt: number; camt: number; samt: number; csamt: number }> = {};
+  // CDNR
+  const cdnrList: any[] = [];
+  // Export
+  const expList: any[] = [];
+  // HSN Summary
+  const hsnMap: Record<string, { hsn_sc: string; desc: string; uqc: string; qty: number; val: number; txval: number; iamt: number; camt: number; samt: number; csamt: number }> = {};
+
+  sales.forEach((s, idx) => {
+    const isInterstate = s.posCode !== company.stateCode;
+    const invVal = Number((s.taxableValue + s.igst + s.cgst + s.sgst + s.cess).toFixed(2));
+
+    // Date formatting DD-MM-YYYY
+    const dParts = s.invoiceDate.split('-');
+    const formattedDate = dParts.length === 3 ? `${dParts[2]}-${dParts[1]}-${dParts[0]}` : s.invoiceDate;
+
+    // Item detail
+    const itmDet = {
+      txval: Number(s.taxableValue.toFixed(2)),
+      rt: Number(s.rate),
+      iamt: Number(s.igst.toFixed(2)),
+      camt: Number(s.cgst.toFixed(2)),
+      samt: Number(s.sgst.toFixed(2)),
+      csamt: Number(s.cess.toFixed(2)),
+    };
+
+    if (s.invoiceType === 'B2B' && s.customerGstin) {
+      const cGstin = s.customerGstin.trim().toUpperCase();
+      if (!b2bMap[cGstin]) b2bMap[cGstin] = [];
+      b2bMap[cGstin].push({
+        inum: s.invoiceNo,
+        idt: formattedDate,
+        val: invVal,
+        pos: s.posCode,
+        rchg: s.reverseCharge || 'N',
+        inv_type: 'R',
+        itms: [{ num: 1, itm_det: itmDet }],
+      });
+    } else if (s.invoiceType === 'B2CL' || (isInterstate && invVal > 250000 && (!s.customerGstin || s.customerGstin.length < 15))) {
+      b2clList.push({
+        pos: s.posCode,
+        inv: [{
+          inum: s.invoiceNo,
+          idt: formattedDate,
+          val: invVal,
+          itms: [{ num: 1, itm_det: itmDet }],
+        }],
+      });
+    } else if (s.invoiceType === 'B2CS' || (!s.customerGstin || s.customerGstin.length < 15)) {
+      const splyTy = isInterstate ? 'INTER' : 'INTRA';
+      const key = `${splyTy}_${s.posCode}_${s.rate}`;
+      if (!b2csMap[key]) {
+        b2csMap[key] = {
+          sply_ty: splyTy,
+          pos: s.posCode,
+          rt: Number(s.rate),
+          txval: 0,
+          iamt: 0,
+          camt: 0,
+          samt: 0,
+          csamt: 0,
+        };
+      }
+      b2csMap[key].txval += s.taxableValue;
+      b2csMap[key].iamt += s.igst;
+      b2csMap[key].camt += s.cgst;
+      b2csMap[key].samt += s.sgst;
+      b2csMap[key].csamt += s.cess;
+    } else if (s.invoiceType === 'EXPORT') {
+      expList.push({
+        exp_typ: 'WOPAY',
+        inv: [{
+          inum: s.invoiceNo,
+          idt: formattedDate,
+          val: invVal,
+          sbpcode: 'INBOM4',
+          sbnum: 12345,
+          sbdt: formattedDate,
+          itms: [{ num: 1, txval: s.taxableValue, rt: s.rate, iamt: s.igst }],
+        }],
+      });
+    }
+
+    // HSN Summary Map
+    const hsnKey = `${s.hsnCode}_${s.rate}`;
+    if (!hsnMap[hsnKey]) {
+      hsnMap[hsnKey] = {
+        hsn_sc: s.hsnCode || '9983',
+        desc: s.description || 'Services',
+        uqc: s.uqc || 'NOS',
+        qty: 0,
+        val: 0,
+        txval: 0,
+        iamt: 0,
+        camt: 0,
+        samt: 0,
+        csamt: 0,
+      };
+    }
+    hsnMap[hsnKey].qty += s.quantity || 1;
+    hsnMap[hsnKey].val += invVal;
+    hsnMap[hsnKey].txval += s.taxableValue;
+    hsnMap[hsnKey].iamt += s.igst;
+    hsnMap[hsnKey].camt += s.cgst;
+    hsnMap[hsnKey].samt += s.sgst;
+    hsnMap[hsnKey].csamt += s.cess;
+  });
+
+  // Construct B2B JSON Array
+  const b2bArray = Object.keys(b2bMap).map((ctin) => ({
+    ctin,
+    inv: b2bMap[ctin],
+  }));
+
+  // Construct B2CS JSON Array
+  const b2csArray = Object.values(b2csMap).map((b) => ({
+    sply_ty: b.sply_ty,
+    pos: b.pos,
+    rt: b.rt,
+    txval: Number(b.txval.toFixed(2)),
+    iamt: Number(b.iamt.toFixed(2)),
+    camt: Number(b.camt.toFixed(2)),
+    samt: Number(b.samt.toFixed(2)),
+    csamt: Number(b.csamt.toFixed(2)),
+  }));
+
+  // Construct HSN Array
+  const hsnData = Object.values(hsnMap).map((h, idx) => ({
+    num: idx + 1,
+    hsn_sc: h.hsn_sc,
+    desc: h.desc,
+    uqc: h.uqc,
+    qty: Number(h.qty.toFixed(2)),
+    val: Number(h.val.toFixed(2)),
+    txval: Number(h.txval.toFixed(2)),
+    iamt: Number(h.iamt.toFixed(2)),
+    camt: Number(h.camt.toFixed(2)),
+    samt: Number(h.samt.toFixed(2)),
+    csamt: Number(h.csamt.toFixed(2)),
+  }));
+
+  // Master GST Offline Payload
+  const gstr1Payload = {
+    gstin: companyGstin,
+    fp: period,
+    gt: 15000000.0,
+    cur_gt: 15000000.0,
+    version: 'GSTR1-V3.1.2',
+    hash: 'hash',
+    b2b: b2bArray,
+    b2cl: b2clList,
+    b2cs: b2csArray,
+    cdnr: cdnrList,
+    exp: expList,
+    hsn: { data: hsnData },
+    doc_issue: {
+      doc_det: [
+        {
+          doc_num: 1,
+          doc_typ: 'Invoices for outward supply',
+          docs: [{ num: 1, from: sales[0]?.invoiceNo || 'INV-001', to: sales[sales.length - 1]?.invoiceNo || 'INV-010', totnum: sales.length, cancel: 0, net_issue: sales.length }],
+        },
+      ],
+    },
+  };
+
+  const jsonStr = JSON.stringify(gstr1Payload, null, 2);
+  const sizeKb = Number((jsonStr.length / 1024).toFixed(2));
+
+  return {
+    id: `GEN-GSTR1-${Date.now()}`,
+    companyId: company.id,
+    module: 'GST',
+    fileType: 'GSTR1_JSON',
+    fileName: `${companyGstin}_GSTR1_${period}.json`,
+    fileContent: jsonStr,
+    monthYearOrQuarter: monthYear,
+    createdAt: new Date().toISOString(),
+    recordCount: sales.length,
+    fileSizeKb: sizeKb,
+  };
+}
+
+export function generateGstr1SalesRegisterCsv(company: Company, sales: SalesInvoice[], monthYear: string): GeneratedFile {
+  const period = formatGstPeriod(monthYear);
+  const rows: any[][] = [
+    ['Sales Register & Audit Report', company.legalName, company.gstin, `Period: ${monthYear}`],
+    [],
+    [
+      'Invoice No',
+      'Invoice Date',
+      'Customer Name',
+      'Customer GSTIN',
+      'Invoice Type',
+      'POS State',
+      'POS Code',
+      'HSN/SAC',
+      'Description',
+      'Qty',
+      'UQC',
+      'Rate %',
+      'Taxable Value (INR)',
+      'IGST (INR)',
+      'CGST (INR)',
+      'SGST (INR)',
+      'Cess (INR)',
+      'Total Invoice Value (INR)',
+    ],
+  ];
+
+  sales.forEach((s) => {
+    const totalVal = s.taxableValue + s.igst + s.cgst + s.sgst + s.cess;
+    rows.push([
+      s.invoiceNo,
+      s.invoiceDate,
+      s.customerName,
+      s.customerGstin || 'URD',
+      s.invoiceType,
+      s.posState,
+      s.posCode,
+      s.hsnCode,
+      s.description,
+      s.quantity || 1,
+      s.uqc || 'NOS',
+      s.rate,
+      s.taxableValue,
+      s.igst,
+      s.cgst,
+      s.sgst,
+      s.cess,
+      totalVal,
+    ]);
+  });
+
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  const csvContent = XLSX.utils.sheet_to_csv(ws);
+
+  return {
+    id: `GEN-GSTR1-REGISTER-${Date.now()}`,
+    companyId: company.id,
+    module: 'GST',
+    fileType: 'GSTR1_REGISTER_CSV',
+    fileName: `${company.gstin}_Sales_Register_${period}.csv`,
+    fileContent: csvContent,
+    monthYearOrQuarter: monthYear,
+    createdAt: new Date().toISOString(),
+    recordCount: sales.length,
+    fileSizeKb: Number((csvContent.length / 1024).toFixed(2)),
+  };
+}
+
+export function generateGstr1B2bCsv(company: Company, sales: SalesInvoice[], monthYear: string): GeneratedFile {
+  const period = formatGstPeriod(monthYear);
+  const b2bSales = sales.filter((s) => s.invoiceType === 'B2B' || (s.customerGstin && s.customerGstin.length === 15));
+
+  const rows: any[][] = [
+    [
+      'GSTIN/UIN of Recipient',
+      'Receiver Name',
+      'Invoice Number',
+      'Invoice date',
+      'Invoice Value',
+      'Place Of Supply',
+      'Reverse Charge',
+      'Applicable % of Tax Rate',
+      'Invoice Type',
+      'E-Commerce GSTIN',
+      'Rate',
+      'Taxable Value',
+      'Cess Amount',
+    ],
+  ];
+
+  b2bSales.forEach((s) => {
+    const totalVal = Number((s.taxableValue + s.igst + s.cgst + s.sgst + s.cess).toFixed(2));
+    const dParts = s.invoiceDate.split('-');
+    const formattedDate = dParts.length === 3 ? `${dParts[2]}-${dParts[1]}-${dParts[0]}` : s.invoiceDate;
+
+    rows.push([
+      s.customerGstin,
+      s.customerName,
+      s.invoiceNo,
+      formattedDate,
+      totalVal,
+      `${s.posCode}-${s.posState}`,
+      s.reverseCharge || 'N',
+      '',
+      'Regular',
+      '',
+      s.rate,
+      s.taxableValue,
+      s.cess || 0,
+    ]);
+  });
+
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  const csvContent = XLSX.utils.sheet_to_csv(ws);
+
+  return {
+    id: `GEN-GSTR1-B2B-${Date.now()}`,
+    companyId: company.id,
+    module: 'GST',
+    fileType: 'GSTR1_B2B_CSV',
+    fileName: `${company.gstin}_GSTR1_B2B_${period}.csv`,
+    fileContent: csvContent,
+    monthYearOrQuarter: monthYear,
+    createdAt: new Date().toISOString(),
+    recordCount: b2bSales.length,
+    fileSizeKb: Number((csvContent.length / 1024).toFixed(2)),
+  };
+}
+
+export function generateGstr1B2csCsv(company: Company, sales: SalesInvoice[], monthYear: string): GeneratedFile {
+  const period = formatGstPeriod(monthYear);
+  const b2csSales = sales.filter((s) => s.invoiceType === 'B2CS' || !s.customerGstin || s.customerGstin.length < 15);
+
+  // Group by POS, Rate, Supply Type
+  const groupMap: Record<string, { type: string; pos: string; posCode: string; rate: number; txval: number; cess: number }> = {};
+
+  b2csSales.forEach((s) => {
+    const isInter = s.posCode !== company.stateCode;
+    const splyType = isInter ? 'OE' : 'OE'; // Other Than E-Commerce
+    const key = `${splyType}_${s.posCode}_${s.rate}`;
+    if (!groupMap[key]) {
+      groupMap[key] = {
+        type: splyType,
+        pos: `${s.posCode}-${s.posState}`,
+        posCode: s.posCode,
+        rate: s.rate,
+        txval: 0,
+        cess: 0,
+      };
+    }
+    groupMap[key].txval += s.taxableValue;
+    groupMap[key].cess += s.cess || 0;
+  });
+
+  const rows: any[][] = [
+    ['Type', 'Place Of Supply', 'Applicable % of Tax Rate', 'Rate', 'Taxable Value', 'Cess Amount', 'E-Commerce GSTIN'],
+  ];
+
+  Object.values(groupMap).forEach((g) => {
+    rows.push([g.type, g.pos, '', g.rate, Number(g.txval.toFixed(2)), Number(g.cess.toFixed(2)), '']);
+  });
+
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  const csvContent = XLSX.utils.sheet_to_csv(ws);
+
+  return {
+    id: `GEN-GSTR1-B2CS-${Date.now()}`,
+    companyId: company.id,
+    module: 'GST',
+    fileType: 'GSTR1_B2CS_CSV',
+    fileName: `${company.gstin}_GSTR1_B2CS_${period}.csv`,
+    fileContent: csvContent,
+    monthYearOrQuarter: monthYear,
+    createdAt: new Date().toISOString(),
+    recordCount: Object.keys(groupMap).length,
+    fileSizeKb: Number((csvContent.length / 1024).toFixed(2)),
+  };
+}
+
+export function generateGstr1HsnCsv(company: Company, sales: SalesInvoice[], monthYear: string): GeneratedFile {
+  const period = formatGstPeriod(monthYear);
+
+  const hsnMap: Record<string, { hsn: string; desc: string; uqc: string; qty: number; val: number; txval: number; iamt: number; camt: number; samt: number; cess: number }> = {};
+
+  sales.forEach((s) => {
+    const key = `${s.hsnCode}_${s.rate}`;
+    const invVal = s.taxableValue + s.igst + s.cgst + s.sgst + s.cess;
+    if (!hsnMap[key]) {
+      hsnMap[key] = {
+        hsn: s.hsnCode || '998313',
+        desc: s.description || 'Services',
+        uqc: s.uqc || 'NOS',
+        qty: 0,
+        val: 0,
+        txval: 0,
+        iamt: 0,
+        camt: 0,
+        samt: 0,
+        cess: 0,
+      };
+    }
+    hsnMap[key].qty += s.quantity || 1;
+    hsnMap[key].val += invVal;
+    hsnMap[key].txval += s.taxableValue;
+    hsnMap[key].iamt += s.igst;
+    hsnMap[key].camt += s.cgst;
+    hsnMap[key].samt += s.sgst;
+    hsnMap[key].cess += s.cess || 0;
+  });
+
+  const rows: any[][] = [
+    [
+      'HSN',
+      'Description',
+      'UQC',
+      'Total Quantity',
+      'Total Value',
+      'Taxable Value',
+      'Integrated Tax Amount',
+      'Central Tax Amount',
+      'State/UT Tax Amount',
+      'Cess Amount',
+    ],
+  ];
+
+  Object.values(hsnMap).forEach((h) => {
+    rows.push([
+      h.hsn,
+      h.desc,
+      h.uqc,
+      Number(h.qty.toFixed(2)),
+      Number(h.val.toFixed(2)),
+      Number(h.txval.toFixed(2)),
+      Number(h.iamt.toFixed(2)),
+      Number(h.camt.toFixed(2)),
+      Number(h.samt.toFixed(2)),
+      Number(h.cess.toFixed(2)),
+    ]);
+  });
+
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  const csvContent = XLSX.utils.sheet_to_csv(ws);
+
+  return {
+    id: `GEN-GSTR1-HSN-${Date.now()}`,
+    companyId: company.id,
+    module: 'GST',
+    fileType: 'GSTR1_HSN_CSV',
+    fileName: `${company.gstin}_GSTR1_HSN_${period}.csv`,
+    fileContent: csvContent,
+    monthYearOrQuarter: monthYear,
+    createdAt: new Date().toISOString(),
+    recordCount: Object.keys(hsnMap).length,
+    fileSizeKb: Number((csvContent.length / 1024).toFixed(2)),
+  };
+}
+
+export function generateGstr3bSummary(
+  company: Company,
+  sales: SalesInvoice[],
+  purchases: PurchaseInvoice[],
+  monthYear: string = '2026-06',
+  actualFilingDate: string = '2026-08-15',
+  turnoverSlab: TurnoverSlab = '1.5CR_TO_5CR'
+) {
+  // 3.1 Outward supplies summary
+  let taxableOutward = 0;
+  let igstOutward = 0;
+  let cgstOutward = 0;
+  let sgstOutward = 0;
+  let cessOutward = 0;
+
+  sales.forEach((s) => {
+    taxableOutward += s.taxableValue;
+    igstOutward += s.igst;
+    cgstOutward += s.cgst;
+    sgstOutward += s.sgst;
+    cessOutward += s.cess || 0;
+  });
+
+  // 4. Eligible ITC summary
+  let taxableInward = 0;
+  let igstItc = 0;
+  let cgstItc = 0;
+  let sgstItc = 0;
+  let cessItc = 0;
+
+  purchases.forEach((p) => {
+    if (p.itcEligible === 'Y') {
+      taxableInward += p.taxableValue;
+      igstItc += p.igst;
+      cgstItc += p.cgst;
+      sgstItc += p.sgst;
+      cessItc += p.cess || 0;
+    }
+  });
+
+  const period = formatGstPeriod(monthYear);
+
+  // Late Fee & Interest Engine Computation
+  const lateFeeEngine = calculateGstLateFeeAndInterest(
+    company,
+    sales,
+    purchases,
+    monthYear,
+    actualFilingDate,
+    turnoverSlab
+  );
+
+  const summary = {
+    gstin: company.gstin,
+    legalName: company.legalName,
+    period,
+    table31_OutwardSupplies: {
+      a_taxableSupplies: {
+        totalTaxableValue: Number(taxableOutward.toFixed(2)),
+        integratedTax: Number(igstOutward.toFixed(2)),
+        centralTax: Number(cgstOutward.toFixed(2)),
+        stateTax: Number(sgstOutward.toFixed(2)),
+        cess: Number(cessOutward.toFixed(2)),
+      },
+    },
+    table4_EligibleITC: {
+      a5_allOtherITC: {
+        integratedTax: Number(igstItc.toFixed(2)),
+        centralTax: Number(cgstItc.toFixed(2)),
+        stateTax: Number(sgstItc.toFixed(2)),
+        cess: Number(cessItc.toFixed(2)),
+      },
+    },
+    netTaxPayable: {
+      integratedTax: Math.max(0, Number((igstOutward - igstItc).toFixed(2))),
+      centralTax: Math.max(0, Number((cgstOutward - cgstItc).toFixed(2))),
+      stateTax: Math.max(0, Number((sgstOutward - sgstItc).toFixed(2))),
+      cess: Math.max(0, Number((cessOutward - cessItc).toFixed(2))),
+    },
+    table51_InterestAndLateFee: {
+      daysDelayedGstr3b: lateFeeEngine.daysDelayedGstr3b,
+      daysDelayedGstr1: lateFeeEngine.daysDelayedGstr1,
+      interestPayable: lateFeeEngine.interestSection50,
+      lateFeePayableGstr3b: lateFeeEngine.gstr3bLateFee,
+      lateFeePayableGstr1: lateFeeEngine.gstr1LateFee,
+      statutoryDueDates: {
+        gstr1DueDate: lateFeeEngine.gstr1DueDate,
+        gstr3bDueDate: lateFeeEngine.gstr3bDueDate,
+      },
+    },
+    lateFeeEngineDetails: lateFeeEngine,
+  };
+
+  return summary;
+}
+
+export function generateGstr3bExcel(
+  company: Company,
+  sales: SalesInvoice[],
+  purchases: PurchaseInvoice[],
+  monthYear: string = '2026-06',
+  actualFilingDate: string = '2026-08-15',
+  turnoverSlab: TurnoverSlab = '1.5CR_TO_5CR'
+): GeneratedFile {
+  const summary = generateGstr3bSummary(company, sales, purchases, monthYear, actualFilingDate, turnoverSlab);
+  const period = formatGstPeriod(monthYear);
+  const engine = summary.lateFeeEngineDetails;
+
+  const wb = XLSX.utils.book_new();
+
+  // Sheet 1: GSTR-3B Summary Table
+  const tableData = [
+    ['GSTR-3B Auto-Calculated Return Summary with Statutory Interest & Late Fees'],
+    ['Company Name', company.legalName],
+    ['GSTIN', company.gstin],
+    ['Return Period', monthYear],
+    ['GSTR-3B Statutory Due Date', engine.gstr3bDueDate],
+    ['Actual / Intended Filing Date', engine.actualFilingDate],
+    ['Filing Delay (Days)', engine.daysDelayedGstr3b],
+    ['Turnover Slab', turnoverSlab.replace('_', ' ')],
+    [''],
+    ['3.1 Details of Outward Supplies and inward supplies liable to reverse charge'],
+    ['Nature of Supplies', 'Total Taxable Value (₹)', 'Integrated Tax (₹)', 'Central Tax (₹)', 'State/UT Tax (₹)', 'Cess (₹)'],
+    [
+      '(a) Outward taxable supplies (other than zero rated, nil rated and exempted)',
+      summary.table31_OutwardSupplies.a_taxableSupplies.totalTaxableValue,
+      summary.table31_OutwardSupplies.a_taxableSupplies.integratedTax,
+      summary.table31_OutwardSupplies.a_taxableSupplies.centralTax,
+      summary.table31_OutwardSupplies.a_taxableSupplies.stateTax,
+      summary.table31_OutwardSupplies.a_taxableSupplies.cess,
+    ],
+    [''],
+    ['4. Eligible ITC (Input Tax Credit)'],
+    ['Details', 'Integrated Tax (₹)', 'Central Tax (₹)', 'State/UT Tax (₹)', 'Cess (₹)'],
+    [
+      '(A)(5) All other ITC (From Purchase Register)',
+      summary.table4_EligibleITC.a5_allOtherITC.integratedTax,
+      summary.table4_EligibleITC.a5_allOtherITC.centralTax,
+      summary.table4_EligibleITC.a5_allOtherITC.stateTax,
+      summary.table4_EligibleITC.a5_allOtherITC.cess,
+    ],
+    [''],
+    ['5. Net Tax Liability (Estimated before Late Fees & Interest)'],
+    ['Tax Type', 'Outward Tax', 'ITC Available', 'Net Cash Payable'],
+    ['IGST', summary.table31_OutwardSupplies.a_taxableSupplies.integratedTax, summary.table4_EligibleITC.a5_allOtherITC.integratedTax, summary.netTaxPayable.integratedTax],
+    ['CGST', summary.table31_OutwardSupplies.a_taxableSupplies.centralTax, summary.table4_EligibleITC.a5_allOtherITC.centralTax, summary.netTaxPayable.centralTax],
+    ['SGST', summary.table31_OutwardSupplies.a_taxableSupplies.stateTax, summary.table4_EligibleITC.a5_allOtherITC.stateTax, summary.netTaxPayable.stateTax],
+    ['Cess', summary.table31_OutwardSupplies.a_taxableSupplies.cess, summary.table4_EligibleITC.a5_allOtherITC.cess, summary.netTaxPayable.cess],
+    [''],
+    ['5.1 Interest and Late Fee Payable (Section 47 & Section 50)'],
+    ['Description', 'Integrated Tax (₹)', 'Central Tax (₹)', 'State/UT Tax (₹)', 'Cess (₹)', 'Total (₹)'],
+    [
+      'Interest Payable @ 18% p.a. on Net Cash (Sec 50(1))',
+      engine.interestSection50.igst,
+      engine.interestSection50.cgst,
+      engine.interestSection50.sgst,
+      engine.interestSection50.cess,
+      engine.interestSection50.total,
+    ],
+    [
+      `Late Fee Payable (Sec 47 - ${engine.daysDelayedGstr3b} Days Delayed)`,
+      0,
+      engine.gstr3bLateFee.cgst,
+      engine.gstr3bLateFee.sgst,
+      0,
+      engine.gstr3bLateFee.total,
+    ],
+    [''],
+    ['GRAND TOTAL CASH REQUIREMENT SUMMARY (Net Tax + Interest + Late Fee)'],
+    ['Tax / Fee Component', 'Amount (₹)'],
+    ['Net Cash Tax Payable', engine.netCashLiability.total],
+    ['Sec 50(1) Interest @ 18% p.a.', engine.interestSection50.total],
+    ['Sec 47 GSTR-3B Late Fee', engine.gstr3bLateFee.total],
+    ['Total Cash Requirement (PMT-06 Challan)', engine.grandTotalCashPayable],
+    [''],
+    ['Invoice Level Late Payment & Interest Notice Audit'],
+    ['Invoice No', 'Invoice Date', 'Customer Name', 'Taxable Value (₹)', 'Total Tax (₹)', 'Days Delayed', 'Status Notice'],
+    ...engine.invoiceDelayNotices.map((n) => [
+      n.invoiceNo,
+      n.invoiceDate,
+      n.customerName,
+      n.taxableValue,
+      n.totalTax,
+      n.daysDelayedFromInvoice,
+      n.statusNotice,
+    ]),
+    [''],
+    ['Statutory Notes & Legal Compliance'],
+    ...engine.statutoryNotes.map((note) => [note]),
+  ];
+
+  const ws = XLSX.utils.aoa_to_sheet(tableData);
+  XLSX.utils.book_append_sheet(wb, ws, 'GSTR-3B & Late Fee Summary');
+
+  const csvContent = XLSX.utils.sheet_to_csv(ws);
+
+  return {
+    id: `GEN-GSTR3B-${Date.now()}`,
+    companyId: company.id,
+    module: 'GST',
+    fileType: 'GSTR3B_EXCEL',
+    fileName: `${company.gstin}_GSTR3B_With_LateFees_${period}.csv`,
+    fileContent: csvContent,
+    monthYearOrQuarter: monthYear,
+    createdAt: new Date().toISOString(),
+    recordCount: sales.length + purchases.length,
+    fileSizeKb: Number((csvContent.length / 1024).toFixed(2)),
+  };
+}

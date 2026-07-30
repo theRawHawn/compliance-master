@@ -83,13 +83,14 @@ function parseDateValue(value: any): string {
       }
     }
 
-    const monthNameMatch = normalized.match(/^(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{4})$/i);
+    const monthNameMatch = normalized.match(/^(\d{1,2})[\s\-\/]+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[\s\-\/]+(\d{2,4})$/i);
     if (monthNameMatch) {
-      const [, day, monthName, year] = monthNameMatch;
+      const [, day, monthName, yearPart] = monthNameMatch;
       const monthMap = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-      const monthIndex = monthMap.findIndex((m) => m.toLowerCase() === monthName.toLowerCase());
+      const monthIndex = monthMap.findIndex((m) => m.toLowerCase() === monthName.toLowerCase().slice(0, 3));
+      const year = yearPart.length <= 2 ? 2000 + Number(yearPart) : Number(yearPart);
       if (monthIndex >= 0) {
-        const parsed = new Date(Date.UTC(Number(year), monthIndex, Number(day)));
+        const parsed = new Date(Date.UTC(year, monthIndex, Number(day)));
         return `${parsed.getUTCFullYear()}-${String(parsed.getUTCMonth() + 1).padStart(2, '0')}-${String(parsed.getUTCDate()).padStart(2, '0')}`;
       }
     }
@@ -138,7 +139,7 @@ export async function parseGstFile(
         const sheet = workbook.Sheets[sheetName];
         if (!sheet) continue;
 
-        const rows: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false });
+        const rows: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: true });
         if (!rows || rows.length === 0) continue;
 
         let headerRowIdx = -1;
@@ -171,8 +172,19 @@ export async function parseGstFile(
         }
 
         const getRowVal = (rowArr: any[], candidates: string[]): any => {
+          // Pass 1: exact column-name match, tried for every candidate first.
           for (const cand of candidates) {
             const candClean = cand.toLowerCase().replace(/[^a-z0-9]/g, '');
+            if (colMap[candClean] === undefined) continue;
+            const val = rowArr[colMap[candClean]];
+            if (val !== undefined && val !== null && String(val).trim() !== '') return val;
+          }
+          // Pass 2: fuzzy substring match, only for candidates specific enough (4+ chars)
+          // to be unlikely to collide with an unrelated column (e.g. short candidates like
+          // 'gst' or 'rt' would otherwise match inside 'CustomerGSTIN' or similar).
+          for (const cand of candidates) {
+            const candClean = cand.toLowerCase().replace(/[^a-z0-9]/g, '');
+            if (candClean.length < 4) continue;
             for (const [colName, colIdx] of Object.entries(colMap)) {
               if (colName.includes(candClean)) {
                 const val = rowArr[colIdx];
@@ -526,10 +538,16 @@ function extractInvoiceNumber(lines: string[] | string): string {
   const lineArray = Array.isArray(lines) ? lines : [lines];
   // Try specific format first (e.g., INV/26-27086), then generic invoice label
   const patterns = [
-    /\b(INV|BILL|PUR|DOC|VCH|REF)([\s\-:\.\/ ]?)([A-Z0-9\/\-]{2,40})\b/i,
+    // \b after the alternation is critical: without it, "INV" matches inside the word
+    // "Invoice" itself (INV + "oice"), "BILL" matches inside "Billing", "DOC" inside
+    // "Document", "REF" inside "Reference" — so a line like "Invoice No. INV/25-26/0456"
+    // would wrongly extract the literal word "Invoice" instead of the real number.
+    /\b(INV|BILL|PUR|DOC|VCH|REF)\b([\s\-:\.\/ ]?)([A-Z0-9\/\-]{2,40})\b/i,
     /\b([A-Z]{1,3}(?:\/|-)\d{1,6}(?:\/|-)\d{1,6})\b/i,
     /\b(?:invoice(?:\s*(?:no|number|no\.|id|ref))?|bill(?:\s+(?:no|number|no\.|id|ref))?|voucher(?:\s*(?:no|number|no\.|id|ref))?|doc(?:\s*(?:no|number|no\.|id|ref))?|ref(?:\s*(?:no|number|no\.|id|ref))?)(?:\s*[:#=-]?\s*)([A-Z0-9\/\-]{2,40})/i,
   ];
+
+  const degenerateCandidate = /^(date|invoice|bill|billing|voucher|document|doc|reference|ref|no|number|num)$/i;
 
   for (const line of lineArray) {
     for (let i = 0; i < patterns.length; i++) {
@@ -549,7 +567,7 @@ function extractInvoiceNumber(lines: string[] | string): string {
           candidate = match[1];
         }
         
-        if (candidate && !/^date$/i.test(candidate)) {
+        if (candidate && !degenerateCandidate.test(candidate.trim())) {
           return candidate.toString().trim();
         }
       }
@@ -559,10 +577,14 @@ function extractInvoiceNumber(lines: string[] | string): string {
   return '';
 }
 
+const MONTH_NAME_DATE = /\b([0-9]{1,2}[\s\-\/](?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[\s\-\/][0-9]{2,4})\b/i;
+
 function extractInvoiceDate(lines: string[]): string {
   const patterns = [
-    /(?:invoice|bill|voucher|document|doc|date|dt)[\s:=-]*([0-9]{1,2}[\/.\-][0-9]{1,2}[\/.\-][0-9]{2,4})/i,
-    /(?:invoice|bill|voucher|document|doc|date|dt)[\s:=-]*([0-9]{4}[\/.\-][0-9]{1,2}[\/.\-][0-9]{1,2})/i,
+    /(?:invoice|bill|voucher|document|doc|dated?|dt)[\s:=-]*([0-9]{1,2}[\/.\-][0-9]{1,2}[\/.\-][0-9]{2,4})/i,
+    /(?:invoice|bill|voucher|document|doc|dated?|dt)[\s:=-]*([0-9]{4}[\/.\-][0-9]{1,2}[\/.\-][0-9]{1,2})/i,
+    // Tally's default export format, e.g. "Dated 15-Jun-2026" or "Invoice Date: 15 Jun 26"
+    /(?:invoice|bill|voucher|document|doc|dated?|dt)[\s:=-]*([0-9]{1,2}[\s\-\/](?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[\s\-\/][0-9]{2,4})/i,
   ];
 
   for (const line of lines) {
@@ -576,7 +598,7 @@ function extractInvoiceDate(lines: string[]): string {
   }
 
   for (const line of lines) {
-    const match = line.match(/\b([0-9]{1,2}[\/.\-][0-9]{1,2}[\/.\-][0-9]{2,4})\b/);
+    const match = line.match(/\b([0-9]{1,2}[\/.\-][0-9]{1,2}[\/.\-][0-9]{2,4})\b/) || line.match(MONTH_NAME_DATE);
     if (match) {
       const parsed = parseDateValue(match[1]);
       if (parsed) return parsed;
@@ -592,17 +614,85 @@ function extractGstin(lines: string[]): string {
   return match ? match[0].trim() : '';
 }
 
-function extractPartyGstin(lines: string[], partyName: string): string {
-  const gstinPattern = /\b\d{2}[A-Z]{5}\d{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}\b/i;
-  const partyLabels = ['billing address', 'bill to', 'ship to', 'sold to', 'customer', 'buyer', 'recipient', 'to:', 'from:'];
+// Shared across extractPartyGstin and extractPartyName. Covers common Zoho Books, Tally, and
+// generic invoice header phrasings for the buyer/customer block. Ordered roughly longest-first
+// as a readability aid only — matching itself picks the leftmost, then longest, hit per line
+// (see findPartyLabelMatch) so array order does not affect correctness.
+const PARTY_LABELS = [
+  'billing address',
+  "party's a/c name",
+  'party a/c name',
+  'party name',
+  'buyer (bill to)',
+  'consignee (ship to)',
+  'billed to',
+  'invoice to',
+  'bill to',
+  'ship to',
+  'sold to',
+  'customer name',
+  'client name',
+  'consignee',
+  'customer',
+  'buyer',
+  'recipient',
+  'client',
+  'to:',
+  'from:',
+];
 
+const GSTIN_PATTERN = /\b\d{2}[A-Z]{5}\d{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}\b/i;
+
+// Text that indicates a line is header/label noise rather than an actual party name.
+// Deliberately excludes words like "traders", "services", "company", and "enterprises" —
+// those are extremely common suffixes in real Indian business names (e.g. "Acme Traders",
+// "Sharma Services Pvt Ltd") and must never be used to reject a same-line or multi-line
+// candidate. This single regex is reused everywhere a candidate line is validated so the
+// same mistake can't be reintroduced in just one code path.
+const PARTY_NOISE_TERMS = /(gstin|invoice|voucher|doc\s*no|ref\s*no|dated?|amount|total\b|tax\b|hsn|qty|rate|address|particulars|seller|merchant|supplier)/i;
+const PARTY_REJECT_PATTERN = /\b\d{4,}\b|^\d+$|plot no|flat no|floor|city|state|postal|pin\s*code|^[a-z]{2}\d{4,}\b/i;
+
+function isPlausiblePartyName(candidate: string): boolean {
+  const trimmed = candidate.trim();
+  if (trimmed.length < 3) return false;
+  if (GSTIN_PATTERN.test(trimmed)) return false;
+  if (PARTY_NOISE_TERMS.test(trimmed)) return false;
+  if (PARTY_REJECT_PATTERN.test(trimmed)) return false;
+  return true;
+}
+
+function cleanPartyName(candidate: string): string {
+  return candidate
+    .trim()
+    .replace(/^[\s:()\-=]+/, '')
+    .replace(/[\s()]+$/, '')
+    .replace(/^m\/s\.?\s+/i, '')
+    .trim();
+}
+
+// Finds the label that starts earliest in the line (ties broken by longest label), so a
+// compound header like "Buyer (Bill to)" anchors on "buyer" rather than accidentally matching
+// the "bill to" substring buried inside the parentheses.
+function findPartyLabelMatch(lowerLine: string): { label: string; index: number } | null {
+  let best: { label: string; index: number } | null = null;
+  for (const label of PARTY_LABELS) {
+    const idx = lowerLine.indexOf(label);
+    if (idx === -1) continue;
+    if (!best || idx < best.index || (idx === best.index && label.length > best.label.length)) {
+      best = { label, index: idx };
+    }
+  }
+  return best;
+}
+
+function extractPartyGstin(lines: string[], partyName: string): string {
   for (let i = 0; i < lines.length; i += 1) {
     const lowerLine = lines[i].toLowerCase();
-    if (!partyLabels.some((label) => lowerLine.includes(label))) continue;
+    if (!findPartyLabelMatch(lowerLine)) continue;
 
-    const context = lines.slice(i + 1, i + 6);
+    const context = lines.slice(i, i + 8);
     for (const candidate of context) {
-      const gstinMatch = candidate.match(gstinPattern);
+      const gstinMatch = candidate.match(GSTIN_PATTERN);
       if (gstinMatch) return gstinMatch[0].trim();
     }
   }
@@ -614,7 +704,7 @@ function extractPartyGstin(lines: string[], partyName: string): string {
       if (!lowerLine.includes(partyNameLower)) continue;
       const context = lines.slice(i + 1, i + 6);
       for (const candidate of context) {
-        const gstinMatch = candidate.match(gstinPattern);
+        const gstinMatch = candidate.match(GSTIN_PATTERN);
         if (gstinMatch) return gstinMatch[0].trim();
       }
     }
@@ -624,39 +714,23 @@ function extractPartyGstin(lines: string[], partyName: string): string {
 }
 
 function extractPartyName(lines: string[], gstin: string): string {
-  const partyLabels = ['billing address', 'bill to', 'ship to', 'sold to', 'customer', 'buyer', 'recipient', 'to:', 'from:'];
-  const sellerTerms = /(seller|merchant|supplier|company|traders|services|gstin|invoice|bill|voucher|date|amount|total|tax|hsn|qty|rate|address)/i;
-  // Narrower filter for text on the SAME line as the label (e.g. "Bill To: Acme Traders").
-  // Excludes common Indian business-name suffixes (Traders/Services/Company/Enterprises) so real
-  // customer names aren't dropped just because they contain those words.
-  const sameLineHeaderTerms = /(gstin|invoice|voucher|date|amount|total|tax|hsn|qty|rate|address|seller|merchant|supplier)/i;
-
   for (let i = 0; i < lines.length; i += 1) {
     const lowerLine = lines[i].toLowerCase();
-    
-    // Check if any label is in this line
-    for (const label of partyLabels) {
-      if (!lowerLine.includes(label)) continue;
-      
-      // Try to extract from the same line first (e.g., "Bill To Miyuro" or "Bill To: Acme Traders")
-      const labelIndex = lowerLine.indexOf(label);
-      const afterLabel = lines[i].substring(labelIndex + label.length).replace(/^[\s:=-]+/, '').trim();
-      
-      if (afterLabel && !sameLineHeaderTerms.test(afterLabel) && afterLabel.length >= 3 && 
-          !/\b\d{4,}\b|^\d+$|plot no|flat|floor|city|state|postal|pin|^[a-z]{2}\d{4,}\b/i.test(afterLabel)) {
-        return afterLabel.replace(/^m\/s\s+/i, '').trim();
-      }
-      
-      // If not found on same line, look at next lines
-      const context = lines.slice(i + 1, i + 8);
-      for (const candidate of context) {
-        const trimmed = candidate.trim();
-        if (!trimmed) continue;
-        if (sellerTerms.test(trimmed)) continue;
-        if (trimmed.length < 3) continue;
-        if (/\b\d{4,}\b|^\d+$|plot no|flat|floor|city|state|postal|pin|^[a-z]{2}\d{4,}\b/i.test(trimmed)) continue;
-        return trimmed.replace(/^m\/s\s+/i, '').trim();
-      }
+    const match = findPartyLabelMatch(lowerLine);
+    if (!match) continue;
+
+    // Try to extract from the same line first (e.g., "Bill To Miyuro" or "Party A/c Name : Acme Traders")
+    const afterLabel = cleanPartyName(lines[i].substring(match.index + match.label.length));
+    if (isPlausiblePartyName(afterLabel)) {
+      return cleanPartyName(afterLabel);
+    }
+
+    // If not found on same line, look at next lines
+    const context = lines.slice(i + 1, i + 8);
+    for (const candidate of context) {
+      const trimmed = candidate.trim();
+      if (!trimmed || !isPlausiblePartyName(trimmed)) continue;
+      return cleanPartyName(trimmed);
     }
   }
 
@@ -666,48 +740,45 @@ function extractPartyName(lines: string[], gstin: string): string {
       if (!line.includes(gstin)) continue;
       const previous = lines[i - 1] || '';
       const next = lines[i + 1] || '';
-      const preferred = previous && !sellerTerms.test(previous) ? previous : next && !sellerTerms.test(next) ? next : '';
+      const preferred = isPlausiblePartyName(previous) ? previous : isPlausiblePartyName(next) ? next : '';
       if (preferred) {
-        return preferred.trim().replace(/^m\/s\s+/i, '').trim();
+        return cleanPartyName(preferred);
       }
     }
   }
 
   for (const line of lines) {
-    if (line.length > 3 && !sellerTerms.test(line) && !/^\d+|plot no|flat|floor|city|state|postal|pin|^[a-z]{2}\d{4,}\b/i.test(line)) {
-      return line.trim();
+    if (isPlausiblePartyName(line)) {
+      return cleanPartyName(line);
     }
   }
 
   return '';
 }
 
+// Matches either an Indian/Western comma-grouped number (e.g. "1,23,456" or "50,000" — only
+// taken when a comma is actually present) or a plain digit run of any length (e.g. "50000"),
+// each with an optional decimal part. The comma-grouped branch requires at least one comma
+// group (`+`, not `*`) so a comma-less number always falls through to the plain-digit branch
+// instead of being truncated to its first 1-3 digits.
+const AMOUNT_PATTERN = /(?:\d{1,3}(?:,\d{2,3})+|\d+)(?:\.\d{1,2})?/g;
+
 function extractAmountFromLines(lines: string[], labels: string[]): number {
   const lowerLabels = labels.map((label) => label.toLowerCase());
   for (const line of lines) {
     const lowerLine = line.toLowerCase();
     if (!lowerLabels.some((label) => lowerLine.includes(label))) continue;
-    const amounts = line.match(/\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?/g);
+    const amounts = line.match(AMOUNT_PATTERN);
     if (amounts && amounts.length > 0) {
       const value = Number(amounts[amounts.length - 1].replace(/,/g, ''));
       if (Number.isFinite(value) && value >= 0) return value;
-    }
-  }
-  for (const line of lines) {
-    const lowerLine = line.toLowerCase();
-    if (lowerLine.includes('sub total') || lowerLine.includes('subtotal')) {
-      const amounts = line.match(/\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?/g);
-      if (amounts && amounts.length > 0) {
-        const value = Number(amounts[amounts.length - 1].replace(/,/g, ''));
-        if (Number.isFinite(value) && value > 0) return value;
-      }
     }
   }
   return 0;
 }
 
 function extractNumericValue(text: string): number {
-  const matches = Array.from(text.matchAll(/\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?/g))
+  const matches = Array.from(text.matchAll(AMOUNT_PATTERN))
     .map((m) => Number(m[0].replace(/,/g, '')))
     .filter((value) => Number.isFinite(value) && value > 100);
   return matches.length > 0 ? matches[0] : 100000;

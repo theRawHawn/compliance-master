@@ -287,6 +287,7 @@ export const GstDocumentParser: React.FC<GstDocumentParserProps> = ({
                     <th className="py-2.5 px-3 text-right">IGST (₹)</th>
                     <th className="py-2.5 px-3 text-right">CGST (₹)</th>
                     <th className="py-2.5 px-3 text-right">SGST (₹)</th>
+                    <th className="py-2.5 px-3">Status</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 font-mono">
@@ -305,6 +306,20 @@ export const GstDocumentParser: React.FC<GstDocumentParserProps> = ({
                       <td className="py-2.5 px-3 text-right text-slate-600">₹{s.igst.toLocaleString('en-IN')}</td>
                       <td className="py-2.5 px-3 text-right text-slate-600">₹{s.cgst.toLocaleString('en-IN')}</td>
                       <td className="py-2.5 px-3 text-right text-slate-600">₹{s.sgst.toLocaleString('en-IN')}</td>
+                      <td className="py-2.5 px-3 font-sans">
+                        {s.status === 'WARNING' ? (
+                          <span
+                            className="inline-flex items-center gap-1 text-[10px] font-bold bg-amber-100 text-amber-800 px-2 py-0.5 rounded cursor-help"
+                            title={s.validationMessage || 'Needs review'}
+                          >
+                            <AlertCircle className="w-3 h-3" /> Review
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded">
+                            <CheckCircle2 className="w-3 h-3" /> OK
+                          </span>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -325,6 +340,7 @@ export const GstDocumentParser: React.FC<GstDocumentParserProps> = ({
                     <th className="py-2.5 px-3 text-right">IGST (₹)</th>
                     <th className="py-2.5 px-3 text-right">CGST (₹)</th>
                     <th className="py-2.5 px-3 text-right">SGST (₹)</th>
+                    <th className="py-2.5 px-3">Status</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 font-mono">
@@ -333,11 +349,22 @@ export const GstDocumentParser: React.FC<GstDocumentParserProps> = ({
                       <td className="py-2.5 px-3 font-bold text-slate-900">{p.invoiceNo}</td>
                       <td className="py-2.5 px-3 text-slate-600">{p.invoiceDate}</td>
                       <td className="py-2.5 px-3 font-sans font-semibold text-slate-800">{p.vendorName}</td>
-                      <td className="py-2.5 px-3">{p.vendorGstin}</td>
+                      <td className="py-2.5 px-3">{p.vendorGstin || 'URD'}</td>
                       <td className="py-2.5 px-3 text-right font-bold text-slate-900">₹{p.taxableValue.toLocaleString('en-IN')}</td>
                       <td className="py-2.5 px-3 text-right text-slate-600">₹{p.igst.toLocaleString('en-IN')}</td>
                       <td className="py-2.5 px-3 text-right text-slate-600">₹{p.cgst.toLocaleString('en-IN')}</td>
                       <td className="py-2.5 px-3 text-right text-slate-600">₹{p.sgst.toLocaleString('en-IN')}</td>
+                      <td className="py-2.5 px-3 font-sans">
+                        {p.status === 'WARNING' ? (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-amber-100 text-amber-800 px-2 py-0.5 rounded">
+                            <AlertCircle className="w-3 h-3" /> Review
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded">
+                            <CheckCircle2 className="w-3 h-3" /> OK
+                          </span>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

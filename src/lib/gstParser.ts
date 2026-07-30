@@ -133,7 +133,7 @@ export async function parseGstFile(
   try {
     if (isExcel || isCsv) {
       const buffer = await file.arrayBuffer();
-      const workbook = XLSX.read(buffer, { type: 'array' });
+      const workbook = XLSX.read(buffer, { type: 'array', raw: true });
 
       for (const sheetName of workbook.SheetNames) {
         const sheet = workbook.Sheets[sheetName];
@@ -210,6 +210,7 @@ export async function parseGstFile(
 
           const taxableValRaw = getRowVal(row, ['taxablevalue', 'taxableamt', 'taxable', 'txval', 'amount', 'val', 'subtotal', 'total']) || 0;
           const rateRaw = getRowVal(row, ['rate', 'taxrate', 'rt', 'gstpercent', 'gst']) || 18;
+          const posStateRaw = getRowVal(row, ['placeofsupply', 'pos', 'shiptostate', 'customerstate', 'destinationstate', 'supplystate']) || '';
 
           const igstRaw = getRowVal(row, ['igst', 'integratedtax', 'iamt']) || 0;
           const cgstRaw = getRowVal(row, ['cgst', 'centraltax', 'camt']) || 0;
@@ -229,16 +230,26 @@ export async function parseGstFile(
           let sgst = parseNum(sgstRaw);
 
           const invNo = invNoRaw ? String(invNoRaw).trim() : '';
-          const invDate = parseDateValue(invDateRaw) || '2026-06-15';
+          const parsedInvDate = parseDateValue(invDateRaw);
           const partyGstin = String(partyGstinRaw).trim();
           const partyName = String(partyNameRaw).trim();
+          const gstinValid = isStructurallyValidGstin(partyGstin);
 
           if (!invNo && taxableValue === 0) continue;
           if (String(invNo).toLowerCase().includes('total') || String(partyName).toLowerCase().includes('total')) continue;
 
+          const warnings: string[] = [];
+          if (partyGstin && !gstinValid) warnings.push('Customer/vendor GSTIN does not match the standard 15-character format — verify manually.');
+
+          const invDate = parsedInvDate || new Date().toISOString().split('T')[0];
+          if (!parsedInvDate) warnings.push('Invoice date could not be read from the file — please verify and correct it.');
+
+          const posCode = gstinValid ? partyGstin.substring(0, 2) : (resolveStateCodeFromText(String(posStateRaw)) || stateCode);
+          const posState = resolvePosState(posCode);
+          const isInterState = posCode !== stateCode;
+
           if (igst === 0 && cgst === 0 && sgst === 0 && taxableValue > 0) {
-            const pos = partyGstin && partyGstin.length >= 2 ? partyGstin.substring(0, 2) : stateCode;
-            if (pos !== stateCode) {
+            if (isInterState) {
               igst = Number(((taxableValue * rate) / 100).toFixed(2));
             } else {
               cgst = Number(((taxableValue * rate) / 200).toFixed(2));
@@ -247,16 +258,18 @@ export async function parseGstFile(
           }
 
           if (targetType === 'GSTR1') {
-            const invType = partyGstin.length === 15 ? 'B2B' : (taxableValue > 250000 ? 'B2CL' : 'B2CS');
+            const invType = classifyGstr1InvoiceType(gstinValid, isInterState, taxableValue);
+            if (!invNo) warnings.push('Invoice number was not found — an auto-generated placeholder was used.');
+            if (!partyName) warnings.push('Customer name was not found — a generic placeholder was used.');
             result.salesInvoices.push({
               companyId,
-              invoiceNo: invNo || `INV-2026-${result.salesInvoices.length + 101}`,
-              invoiceDate: invDate || '2026-06-15',
+              invoiceNo: invNo || `INV-REVIEW-${result.salesInvoices.length + 101}`,
+              invoiceDate: invDate,
               customerName: partyName || 'Valued Client',
               customerGstin: partyGstin,
-              invoiceType: invType as any,
-              posState: 'Maharashtra',
-              posCode: partyGstin && partyGstin.length >= 2 ? partyGstin.substring(0, 2) : stateCode,
+              invoiceType: invType,
+              posState,
+              posCode,
               hsnCode: String(getRowVal(row, ['hsn', 'hsncode', 'sac']) || '998313'),
               description: String(getRowVal(row, ['description', 'item', 'particulars']) || 'Professional / Tech Services'),
               quantity: parseNum(getRowVal(row, ['quantity', 'qty'])) || 1,
@@ -268,28 +281,32 @@ export async function parseGstFile(
               sgst,
               cess: 0,
               reverseCharge: 'N',
-              monthYear: '2026-06',
-              status: 'VALID',
+              monthYear: deriveMonthYear(invDate),
+              status: warnings.length > 0 ? 'WARNING' : 'VALID',
+              validationMessage: warnings.length > 0 ? warnings.join(' ') : undefined,
             });
             result.totalTaxable += taxableValue;
             result.totalTax += igst + cgst + sgst;
           } else if (targetType === 'GSTR2B') {
+            if (!invNo) warnings.push('Invoice number was not found — an auto-generated placeholder was used.');
+            if (!partyName) warnings.push('Vendor name was not found — a generic placeholder was used.');
+            if (!partyGstin) warnings.push('Vendor GSTIN was not found — ITC eligibility should be verified manually.');
             result.purchaseInvoices.push({
               companyId,
-              invoiceNo: invNo || `PUR-2026-${result.purchaseInvoices.length + 201}`,
-              invoiceDate: invDate || '2026-06-12',
+              invoiceNo: invNo || `PUR-REVIEW-${result.purchaseInvoices.length + 201}`,
+              invoiceDate: invDate,
               vendorName: partyName || 'Vendor Solutions',
-              vendorGstin: partyGstin || '27AAACG1234F1ZV',
-              posState: 'Maharashtra',
+              vendorGstin: partyGstin,
+              posState,
               hsnCode: String(getRowVal(row, ['hsn', 'hsncode']) || '998311'),
               taxableValue,
               igst,
               cgst,
               sgst,
               cess: 0,
-              itcEligible: 'Y',
-              monthYear: '2026-06',
-              status: 'VALID',
+              itcEligible: gstinValid ? 'Y' : 'N',
+              monthYear: deriveMonthYear(invDate),
+              status: warnings.length > 0 ? 'WARNING' : 'VALID',
               reconciledWith2B: 'MATCHED',
             });
             result.totalTaxable += taxableValue;
@@ -297,6 +314,7 @@ export async function parseGstFile(
           }
         }
       }
+
 
       result.totalRecords = targetType === 'GSTR1' ? result.salesInvoices.length : result.purchaseInvoices.length;
     } else if (isPdf) {
@@ -324,14 +342,26 @@ export async function parseGstFile(
       const b2bArray = jsonData.b2b || jsonData.b2bs || (jsonData.docdata && jsonData.docdata.b2b) || [];
       if (Array.isArray(b2bArray)) {
         b2bArray.forEach((supplier: any) => {
-          const gstin = supplier.ctin || supplier.gstin || '';
+          const gstin = String(supplier.ctin || supplier.gstin || '').trim();
+          const gstinValid = isStructurallyValidGstin(gstin);
           const name = supplier.cname || supplier.tradeName || supplier.legalName || 'Vendor / Recipient';
           const invList = supplier.inv || supplier.invoices || [supplier];
+          const posCode = gstinValid ? gstin.substring(0, 2) : stateCode;
+          const posState = resolvePosState(posCode);
+          const isInterState = posCode !== stateCode;
 
           if (Array.isArray(invList)) {
-            invList.forEach((inv: any) => {
-              const invNo = inv.inum || inv.invNo || inv.invoiceNo || 'INV-001';
-              const invDate = parseDateValue(inv.idt || inv.invDate || inv.invoiceDate) || '2026-06-15';
+            invList.forEach((inv: any, invIdx: number) => {
+              const warnings: string[] = [];
+              if (gstin && !gstinValid) warnings.push('Supplier/recipient GSTIN does not match the standard 15-character format — verify manually.');
+
+              const invNo = inv.inum || inv.invNo || inv.invoiceNo || '';
+              if (!invNo) warnings.push('Invoice number was not found — an auto-generated placeholder was used.');
+
+              const parsedInvDate = parseDateValue(inv.idt || inv.invDate || inv.invoiceDate);
+              const invDate = parsedInvDate || new Date().toISOString().split('T')[0];
+              if (!parsedInvDate) warnings.push('Invoice date could not be read from the file — please verify and correct it.');
+
               const items = inv.itms || inv.items || [inv];
 
               items.forEach((item: any) => {
@@ -343,15 +373,16 @@ export async function parseGstFile(
                 const sgst = Number(det.samt || det.sgst || 0);
 
                 if (targetType === 'GSTR1') {
+                  const invType = classifyGstr1InvoiceType(gstinValid, isInterState, taxableValue);
                   result.salesInvoices.push({
                     companyId,
-                    invoiceNo: invNo,
+                    invoiceNo: invNo || `INV-REVIEW-${result.salesInvoices.length + 101}-${invIdx}`,
                     invoiceDate: invDate,
                     customerName: name,
                     customerGstin: gstin,
-                    invoiceType: gstin.length === 15 ? 'B2B' : 'B2CS',
-                    posState: 'Maharashtra',
-                    posCode: gstin.length >= 2 ? gstin.substring(0, 2) : stateCode,
+                    invoiceType: invType,
+                    posState,
+                    posCode,
                     hsnCode: '998313',
                     description: 'GST Portal Imported Item',
                     quantity: 1,
@@ -363,26 +394,28 @@ export async function parseGstFile(
                     sgst,
                     cess: 0,
                     reverseCharge: 'N',
-                    monthYear: '2026-06',
-                    status: 'VALID',
+                    monthYear: deriveMonthYear(invDate),
+                    status: warnings.length > 0 ? 'WARNING' : 'VALID',
+                    validationMessage: warnings.length > 0 ? warnings.join(' ') : undefined,
                   });
                 } else {
+                  if (!gstin) warnings.push('Vendor GSTIN was not found — ITC eligibility should be verified manually.');
                   result.purchaseInvoices.push({
                     companyId,
-                    invoiceNo: invNo,
+                    invoiceNo: invNo || `PUR-REVIEW-${result.purchaseInvoices.length + 201}-${invIdx}`,
                     invoiceDate: invDate,
                     vendorName: name,
-                    vendorGstin: gstin || '27AAACG1234F1ZV',
-                    posState: 'Maharashtra',
+                    vendorGstin: gstin,
+                    posState,
                     hsnCode: '998311',
                     taxableValue,
                     igst,
                     cgst,
                     sgst,
                     cess: 0,
-                    itcEligible: 'Y',
-                    monthYear: '2026-06',
-                    status: 'VALID',
+                    itcEligible: gstinValid ? 'Y' : 'N',
+                    monthYear: deriveMonthYear(invDate),
+                    status: warnings.length > 0 ? 'WARNING' : 'VALID',
                     reconciledWith2B: 'MATCHED',
                   });
                 }
@@ -439,21 +472,40 @@ function parseTextInvoice(
   const invoiceBlocks = blocks.length > 0 ? blocks : [lines];
 
   invoiceBlocks.forEach((blockLines, idx) => {
-    const invoiceNo = extractInvoiceNumber(blockLines) || `INV-${Date.now()}-${idx + 1}`;
-    const invoiceDate = extractInvoiceDate(blockLines) || extractInvoiceDate(lines) || '2026-06-15';
-    const partyName = extractPartyName(blockLines, globalGstin) || extractPartyName(lines, globalGstin) || 'Extracted Customer';
+    const warnings: string[] = [];
+
+    const extractedInvoiceNo = extractInvoiceNumber(blockLines);
+    const invoiceNo = extractedInvoiceNo || `INV-REVIEW-${Date.now()}-${idx + 1}`;
+    if (!extractedInvoiceNo) warnings.push('Invoice number could not be read from the document — an auto-generated placeholder was used.');
+
+    const extractedInvoiceDate = extractInvoiceDate(blockLines) || extractInvoiceDate(lines);
+    const invoiceDate = extractedInvoiceDate || new Date().toISOString().split('T')[0];
+    if (!extractedInvoiceDate) warnings.push('Invoice date could not be read from the document — please verify and correct it.');
+
+    const extractedPartyName = extractPartyName(blockLines, globalGstin) || extractPartyName(lines, globalGstin);
+    const partyName = extractedPartyName || 'Extracted Customer';
+    if (!extractedPartyName) warnings.push('Customer/vendor name could not be read from the document.');
+
     const gstin = extractPartyGstin(blockLines, partyName) || extractPartyGstin(lines, partyName) || extractGstin(blockLines) || globalGstin;
+    const gstinValid = isStructurallyValidGstin(gstin);
+    if (gstin && !gstinValid) warnings.push('Extracted GSTIN does not match the standard 15-character format — verify manually.');
+
     const rate = extractAmountFromLines(blockLines, ['gst rate', 'tax rate', 'rate', 'gst%']) || 18;
     const taxableValue =
       extractAmountFromLines(blockLines, ['taxable value', 'taxable amount', 'taxable amt', 'base amount', 'net amount', 'sub total', 'subtotal', 'invoice value', 'invoice total', 'total value', 'amount']) ||
       extractAmountFromLines(lines, ['taxable value', 'taxable amount', 'base amount', 'net amount']) ||
       extractNumericValue(lines.join(' '));
+    if (taxableValue === 0) warnings.push('Taxable value could not be confidently read from the document.');
     let igst = extractAmountFromLines(blockLines, ['igst', 'integrated tax', 'integrated']) || 0;
     let cgst = extractAmountFromLines(blockLines, ['cgst', 'central tax', 'camt']) || 0;
     let sgst = extractAmountFromLines(blockLines, ['sgst', 'state tax', 'samt']) || 0;
 
+    const posCode = gstinValid ? gstin.substring(0, 2) : stateCode;
+    const posState = resolvePosState(posCode);
+    const isInterState = posCode !== stateCode;
+
     if (igst === 0 && cgst === 0 && sgst === 0 && taxableValue > 0) {
-      if (gstin && gstin.substring(0, 2) !== stateCode) {
+      if (isInterState) {
         igst = Number(((taxableValue * rate) / 100).toFixed(2));
       } else {
         cgst = Number(((taxableValue * rate) / 200).toFixed(2));
@@ -468,9 +520,9 @@ function parseTextInvoice(
         invoiceDate,
         customerName: partyName,
         customerGstin: gstin,
-        invoiceType: gstin.length === 15 ? 'B2B' : 'B2CS',
-        posState: 'Maharashtra',
-        posCode: gstin.length >= 2 ? gstin.substring(0, 2) : stateCode,
+        invoiceType: classifyGstr1InvoiceType(gstinValid, isInterState, taxableValue),
+        posState,
+        posCode,
         hsnCode: '998313',
         description: 'Extracted invoice from document',
         quantity: 1,
@@ -482,26 +534,28 @@ function parseTextInvoice(
         sgst,
         cess: 0,
         reverseCharge: 'N',
-        monthYear: '2026-06',
-        status: 'VALID',
+        monthYear: deriveMonthYear(invoiceDate),
+        status: warnings.length > 0 ? 'WARNING' : 'VALID',
+        validationMessage: warnings.length > 0 ? warnings.join(' ') : undefined,
       });
     } else {
+      if (!gstin) warnings.push('Vendor GSTIN could not be found — ITC eligibility should be verified manually.');
       purchaseInvoices.push({
         companyId,
         invoiceNo: String(invoiceNo).trim(),
         invoiceDate,
         vendorName: partyName,
-        vendorGstin: gstin || '27AAACG1234F1ZV',
-        posState: 'Maharashtra',
+        vendorGstin: gstin,
+        posState,
         hsnCode: '998311',
         taxableValue,
         igst,
         cgst,
         sgst,
         cess: 0,
-        itcEligible: 'Y',
-        monthYear: '2026-06',
-        status: 'VALID',
+        itcEligible: gstinValid ? 'Y' : 'N',
+        monthYear: deriveMonthYear(invoiceDate),
+        status: warnings.length > 0 ? 'WARNING' : 'VALID',
         reconciledWith2B: 'MATCHED',
       });
     }
@@ -606,6 +660,67 @@ function extractInvoiceDate(lines: string[]): string {
   }
 
   return '';
+}
+
+// Official GST state/UT codes (first 2 digits of every GSTIN). Codes 25 (old Daman & Diu) and
+// 28 (undivided Andhra Pradesh) are legacy/no longer issued but are kept here so a GSTIN using
+// them still resolves to a sensible place-of-supply name instead of "Unknown".
+const GST_STATE_CODES: Record<string, string> = {
+  '01': 'Jammu & Kashmir', '02': 'Himachal Pradesh', '03': 'Punjab', '04': 'Chandigarh',
+  '05': 'Uttarakhand', '06': 'Haryana', '07': 'Delhi', '08': 'Rajasthan', '09': 'Uttar Pradesh',
+  '10': 'Bihar', '11': 'Sikkim', '12': 'Arunachal Pradesh', '13': 'Nagaland', '14': 'Manipur',
+  '15': 'Mizoram', '16': 'Tripura', '17': 'Meghalaya', '18': 'Assam', '19': 'West Bengal',
+  '20': 'Jharkhand', '21': 'Odisha', '22': 'Chhattisgarh', '23': 'Madhya Pradesh', '24': 'Gujarat',
+  '25': 'Daman & Diu (legacy)', '26': 'Dadra & Nagar Haveli and Daman & Diu', '27': 'Maharashtra',
+  '28': 'Andhra Pradesh (legacy)', '29': 'Karnataka', '30': 'Goa', '31': 'Lakshadweep',
+  '32': 'Kerala', '33': 'Tamil Nadu', '34': 'Puducherry', '35': 'Andaman & Nicobar Islands',
+  '36': 'Telangana', '37': 'Andhra Pradesh', '38': 'Ladakh', '97': 'Other Territory',
+};
+
+function resolvePosState(posCode: string): string {
+  return GST_STATE_CODES[posCode] || 'Unknown / Unverified State';
+}
+
+const STATE_NAME_TO_CODE: Record<string, string> = Object.fromEntries(
+  Object.entries(GST_STATE_CODES).map(([code, name]) => [name.toLowerCase().replace(/\s*\(legacy\)\s*$/, ''), code])
+);
+// Common alpha/ISO codes and short forms seen in real Tally/Zoho 'Place of Supply' or
+// 'Ship To State' columns, since B2C invoices have no GSTIN to derive the state from.
+const STATE_ALIAS_TO_CODE: Record<string, string> = {
+  jk: '01', hp: '02', pb: '03', ch: '04', uk: '05', ua: '05', hr: '06', dl: '07', rj: '08',
+  up: '09', br: '10', sk: '11', ar: '12', nl: '13', mn: '14', mz: '15', tr: '16', ml: '17',
+  as: '18', wb: '19', jh: '20', od: '21', or: '21', cg: '22', ct: '22', mp: '23', gj: '24',
+  mh: '27', ap: '37', ka: '29', ga: '30', ld: '31', kl: '32', tn: '33', py: '34', an: '35',
+  tg: '36', ts: '36', la: '38',
+};
+
+function resolveStateCodeFromText(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return '';
+  if (/^\d{2}$/.test(trimmed) && GST_STATE_CODES[trimmed]) return trimmed;
+  const lower = trimmed.toLowerCase();
+  if (STATE_NAME_TO_CODE[lower]) return STATE_NAME_TO_CODE[lower];
+  if (STATE_ALIAS_TO_CODE[lower]) return STATE_ALIAS_TO_CODE[lower];
+  return '';
+}
+
+function isStructurallyValidGstin(gstin: string): boolean {
+  return !!gstin && GSTIN_PATTERN.test(gstin.trim()) && gstin.trim().length === 15;
+}
+
+// Effective 1 Aug 2024 (Notification No. 12/2024-CT, per the 53rd GST Council meeting): B2CL
+// applies only to INTER-STATE supplies to unregistered persons where the invoice value exceeds
+// ₹1,00,000 (previously ₹2,50,000, and previously not conditioned on inter-state at all).
+const B2CL_THRESHOLD = 100000;
+
+function classifyGstr1InvoiceType(gstinValid: boolean, isInterState: boolean, taxableValue: number): 'B2B' | 'B2CL' | 'B2CS' {
+  if (gstinValid) return 'B2B';
+  if (isInterState && taxableValue > B2CL_THRESHOLD) return 'B2CL';
+  return 'B2CS';
+}
+
+function deriveMonthYear(invoiceDate: string): string {
+  return /^\d{4}-\d{2}-\d{2}$/.test(invoiceDate) ? invoiceDate.slice(0, 7) : '';
 }
 
 function extractGstin(lines: string[]): string {

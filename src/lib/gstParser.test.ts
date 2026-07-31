@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { parseGstFile } from './gstParser';
 import { generateGstr1Json, generateGstr3bSummary } from './generators/gstGenerator';
 import { calculateGstLateFeeAndInterest, computeItcSetoff } from './calculators/gstLateFeeCalculator';
-import type { Company, SalesInvoice } from '../types';
+import type { Company, SalesInvoice, PurchaseInvoice } from '../types';
 
 function makeTestCompany(overrides: Partial<Company> = {}): Company {
   return {
@@ -333,6 +333,41 @@ test('export invoices derive exp_typ from actual IGST charged, and never fabrica
   // (e.g. the same '12345'/'INBOM4' for every invoice) since that data isn't actually captured.
   assert.notEqual(zeroRated.inv[0].sbnum, 12345);
   assert.notEqual(zeroRated.inv[0].sbpcode, 'INBOM4');
+});
+
+test('generateGstr3bSummary netTaxPayable matches the late-fee engine net cash liability (Rule 88A consistency)', () => {
+  const company = makeTestCompany();
+  const sales: SalesInvoice[] = [
+    { id: '1', companyId: 'C1', invoiceNo: 'INV-1', invoiceDate: '2026-06-10', customerName: 'A',
+      customerGstin: '33AAACA1234F1Z5', posState: 'Tamil Nadu', posCode: '33', invoiceType: 'B2B',
+      reverseCharge: 'N', hsnCode: '998313', description: 'x', quantity: 1, uqc: 'NOS', rate: 18,
+      // Inter-state sale -> IGST only, no CGST/SGST on the outward side.
+      taxableValue: 100000, igst: 18000, cgst: 0, sgst: 0, cess: 0, monthYear: '2026-06', status: 'VALID' },
+  ];
+  const purchases: PurchaseInvoice[] = [
+    { id: '1', companyId: 'C1', invoiceNo: 'PUR-1', invoiceDate: '2026-06-05', vendorName: 'B',
+      vendorGstin: '29AAACB1234F1Z5', posState: 'Karnataka', hsnCode: '998313',
+      // Intra-state purchase -> CGST/SGST credit, no IGST credit.
+      taxableValue: 100000, igst: 0, cgst: 9000, sgst: 9000, cess: 0, itcEligible: 'Y',
+      monthYear: '2026-06', status: 'VALID', reconciledWith2B: 'MATCHED' },
+  ];
+
+  const summary = generateGstr3bSummary(company, sales, purchases, '2026-06', '2026-07-15', '1.5CR_TO_5CR');
+  const engine = (summary as any).lateFeeEngineDetails;
+
+  // Regression: these two figures must always agree -- they appear together in the same
+  // generated file and previously used two different (and disagreeing) calculations.
+  assert.equal(summary.netTaxPayable.integratedTax, engine.netCashLiability.igst);
+  assert.equal(summary.netTaxPayable.centralTax, engine.netCashLiability.cgst);
+  assert.equal(summary.netTaxPayable.stateTax, engine.netCashLiability.sgst);
+
+  // With CGST/SGST credit available but no matching CGST/SGST outward liability, and IGST
+  // outward liability with no IGST credit, the correct Rule 88A answer is: IGST liability stays
+  // at 18000 (CGST/SGST credit cannot offset IGST liability), CGST/SGST liability is 0 (no
+  // outward CGST/SGST to offset in the first place).
+  assert.equal(summary.netTaxPayable.integratedTax, 18000);
+  assert.equal(summary.netTaxPayable.centralTax, 0);
+  assert.equal(summary.netTaxPayable.stateTax, 0);
 });
 
 test('generateGstr1Json only includes invoices from the selected return period', () => {

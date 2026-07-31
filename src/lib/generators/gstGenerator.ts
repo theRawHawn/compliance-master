@@ -4,7 +4,7 @@
 
 import { Company, SalesInvoice, PurchaseInvoice, GeneratedFile } from '../../types';
 import * as XLSX from 'xlsx';
-import { calculateGstLateFeeAndInterest, TurnoverSlab, previousMonthYear, todayIso } from '../calculators/gstLateFeeCalculator';
+import { calculateGstLateFeeAndInterest, TurnoverSlab, previousMonthYear, todayIso, computeItcSetoff } from '../calculators/gstLateFeeCalculator';
 
 export function formatGstPeriod(monthYear: string): string {
   // Input: '2026-06' -> Output: '062026'
@@ -550,6 +550,15 @@ export function generateGstr3bSummary(
     turnoverSlab
   );
 
+  // Net tax payable after Rule 88A ITC cross-utilization (IGST credit first against IGST, then
+  // CGST, then SGST; CGST/SGST credit never cross the CGST/SGST boundary) -- using the same
+  // computeItcSetoff as the late-fee engine so this figure and lateFeeEngine.netCashLiability
+  // always agree, rather than each computing an independent (and differing) net liability.
+  const netTaxPayable = computeItcSetoff(
+    { igst: igstOutward, cgst: cgstOutward, sgst: sgstOutward, cess: cessOutward },
+    { igst: igstItc, cgst: cgstItc, sgst: sgstItc, cess: cessItc }
+  );
+
   const summary = {
     gstin: company.gstin,
     legalName: company.legalName,
@@ -572,10 +581,10 @@ export function generateGstr3bSummary(
       },
     },
     netTaxPayable: {
-      integratedTax: Math.max(0, Number((igstOutward - igstItc).toFixed(2))),
-      centralTax: Math.max(0, Number((cgstOutward - cgstItc).toFixed(2))),
-      stateTax: Math.max(0, Number((sgstOutward - sgstItc).toFixed(2))),
-      cess: Math.max(0, Number((cessOutward - cessItc).toFixed(2))),
+      integratedTax: Number(netTaxPayable.igst.toFixed(2)),
+      centralTax: Number(netTaxPayable.cgst.toFixed(2)),
+      stateTax: Number(netTaxPayable.sgst.toFixed(2)),
+      cess: Number(netTaxPayable.cess.toFixed(2)),
     },
     table51_InterestAndLateFee: {
       daysDelayedGstr3b: lateFeeEngine.daysDelayedGstr3b,

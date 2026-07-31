@@ -155,7 +155,7 @@ export const Gst3bAutoSetoff: React.FC<Gst3bAutoSetoffProps> = ({
             <span className="bg-purple-100 text-purple-800 text-[10px] font-extrabold px-2.5 py-1 rounded-full uppercase tracking-wider">
               Rule 88A Statutory Set-off & Sec 47/50 Engine
             </span>
-            <span className="text-slate-500 text-xs font-semibold">Period: June 2026</span>
+            <span className="text-slate-500 text-xs font-semibold">Period: {monthYear ? new Date(`${monthYear}-01T00:00:00Z`).toLocaleDateString('en-IN', { month: 'long', year: 'numeric', timeZone: 'UTC' }) : 'No period selected'}</span>
           </div>
           <h2 className="text-xl font-black text-slate-900 mt-1 flex items-center gap-2">
             <Calculator className="w-5 h-5 text-purple-600" />

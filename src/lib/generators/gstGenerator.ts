@@ -24,7 +24,15 @@ export function generateGstr1Json(company: Company, allSales: SalesInvoice[], mo
   const b2clList: any[] = [];
   // B2CS (Aggregated by POS and Rate)
   const b2csMap: Record<string, { sply_ty: string; pos: string; rt: number; txval: number; iamt: number; camt: number; samt: number; csamt: number }> = {};
-  // CDNR
+  // CDNR (Credit/Debit Notes - Registered recipients, GSTR-1 Table 9B).
+  // NOTE: not currently populated. SalesInvoice has no way to distinguish a credit note from a
+  // debit note (no note-type field, no reference to the original invoice being adjusted), so
+  // this cannot be built correctly from the current data model -- guessing would risk silently
+  // misclassifying a debit note as a credit note (or vice versa), which would misstate the
+  // adjustment's effect on tax liability. No code path in this app currently assigns
+  // invoiceType: 'CDNR' to a SalesInvoice, so this is presently unreachable rather than actively
+  // dropping real data -- but if credit/debit note entry is added, extend SalesInvoice with the
+  // required fields first rather than inferring them here.
   const cdnrList: any[] = [];
   // Export
   const expList: any[] = [];
@@ -61,6 +69,32 @@ export function generateGstr1Json(company: Company, allSales: SalesInvoice[], mo
         inv_type: 'R',
         itms: [{ num: 1, itm_det: itmDet }],
       });
+    } else if (s.invoiceType === 'EXPORT') {
+      // Shipping bill number/port/date are mandatory, invoice-specific fields used by the
+      // government to cross-verify export invoices against actual customs (ICEGATE) records for
+      // IGST refund processing. SalesInvoice does not currently capture this data, so it is left
+      // as an explicit, obviously-incomplete placeholder rather than a fabricated but
+      // plausible-looking value that could be filed without the user noticing it's fake.
+      // TODO: capture shippingBillNumber/shippingBillDate/portCode on SalesInvoice so this can be
+      // populated with real data instead of a placeholder that must be corrected before filing.
+      expList.push({
+        // A zero-rated export under LUT (WOPAY) cannot legally have IGST charged, so IGST > 0
+        // here necessarily means tax was paid and will be claimed back as a refund (WPAY).
+        exp_typ: s.igst > 0 ? 'WPAY' : 'WOPAY',
+        inv: [{
+          inum: s.invoiceNo,
+          idt: formattedDate,
+          val: invVal,
+          sbpcode: 'VERIFY-PORT-CODE',
+          sbnum: 0, // VERIFY: replace with the actual shipping bill number before filing
+          sbdt: '',
+          itms: [{ num: 1, txval: s.taxableValue, rt: s.rate, iamt: s.igst }],
+        }],
+      });
+    } else if (s.invoiceType === 'CDNR') {
+      // See the cdnrList declaration above: not populated, since the current data model can't
+      // distinguish credit vs debit notes. Explicitly caught here (rather than falling through)
+      // so a CDNR-typed invoice is never misrouted into B2CL/B2CS by the heuristics below.
     } else if (s.invoiceType === 'B2CL' || (isInterstate && invVal > 100000 && (!s.customerGstin || s.customerGstin.length < 15))) {
       b2clList.push({
         pos: s.posCode,
@@ -91,19 +125,6 @@ export function generateGstr1Json(company: Company, allSales: SalesInvoice[], mo
       b2csMap[key].camt += s.cgst;
       b2csMap[key].samt += s.sgst;
       b2csMap[key].csamt += s.cess;
-    } else if (s.invoiceType === 'EXPORT') {
-      expList.push({
-        exp_typ: 'WOPAY',
-        inv: [{
-          inum: s.invoiceNo,
-          idt: formattedDate,
-          val: invVal,
-          sbpcode: 'INBOM4',
-          sbnum: 12345,
-          sbdt: formattedDate,
-          itms: [{ num: 1, txval: s.taxableValue, rt: s.rate, iamt: s.igst }],
-        }],
-      });
     }
 
     // HSN Summary Map

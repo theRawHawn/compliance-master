@@ -165,7 +165,7 @@ export const DEMO_SALES: SalesInvoice[] = [
     customerName: 'AeroSpace Global LLC (Export)',
     customerGstin: '',
     posState: 'Other Territory',
-    posCode: '99',
+    posCode: '97',
     invoiceType: 'EXPORT',
     reverseCharge: 'N',
     hsnCode: '998315',

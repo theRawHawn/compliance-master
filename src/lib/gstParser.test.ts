@@ -307,6 +307,34 @@ test('a genuinely parsed file is never flagged as sample data', async () => {
   const result = await parseGstFile(file, 'GSTR1', 'C1', '29');
   assert.equal(result.isSampleData, undefined);
 });
+test('export invoices derive exp_typ from actual IGST charged, and never fabricate shipping bill data', () => {
+  const company = makeTestCompany();
+  const zeroRatedExport: SalesInvoice = {
+    id: '1', companyId: 'C1', invoiceNo: 'EXP-1', invoiceDate: '2026-06-10', customerName: 'Overseas Client',
+    customerGstin: '', posState: 'Other Territory', posCode: '97', invoiceType: 'EXPORT',
+    reverseCharge: 'N', hsnCode: '998315', description: 'Consulting', quantity: 1, uqc: 'NOS', rate: 0,
+    taxableValue: 200000, igst: 0, cgst: 0, sgst: 0, cess: 0, monthYear: '2026-06', status: 'VALID',
+  };
+  const wpayExport: SalesInvoice = {
+    ...zeroRatedExport, id: '2', invoiceNo: 'EXP-2', igst: 36000, rate: 18,
+  };
+
+  const file = generateGstr1Json(company, [zeroRatedExport, wpayExport], '2026-06');
+  const payload = JSON.parse(file.fileContent);
+  const zeroRated = payload.exp.find((e: any) => e.inv[0].inum === 'EXP-1');
+  const withPayment = payload.exp.find((e: any) => e.inv[0].inum === 'EXP-2');
+
+  // Regression: an export with zero IGST must be WOPAY; one with IGST charged must be WPAY —
+  // never hardcoded to WOPAY regardless of actual tax charged.
+  assert.equal(zeroRated.exp_typ, 'WOPAY');
+  assert.equal(withPayment.exp_typ, 'WPAY');
+
+  // Regression: shipping bill number/port must never be a fabricated-but-plausible value
+  // (e.g. the same '12345'/'INBOM4' for every invoice) since that data isn't actually captured.
+  assert.notEqual(zeroRated.inv[0].sbnum, 12345);
+  assert.notEqual(zeroRated.inv[0].sbpcode, 'INBOM4');
+});
+
 test('generateGstr1Json only includes invoices from the selected return period', () => {
   const company = makeTestCompany();
   const sales: SalesInvoice[] = [

@@ -282,6 +282,31 @@ test('derives monthYear from the actual invoice date instead of a fixed value', 
   assert.equal(result.salesInvoices[0].monthYear, '2026-03');
 });
 
+test('GSTIN checksum matches the published worked reference example (34AABCB5576G1Z -> Q)', async () => {
+  const { computeGstinCheckDigit, hasValidGstinChecksum } = await import('./gstParser');
+  assert.equal(computeGstinCheckDigit('34AABCB5576G1Z'), 'Q');
+  assert.equal(hasValidGstinChecksum('34AABCB5576G1ZQ'), true);
+  // Flipping the check character must be detected as invalid.
+  assert.equal(hasValidGstinChecksum('34AABCB5576G1ZA'), false);
+});
+
+test('getDemoParsedData always marks its output as sample data, for every doc type', async () => {
+  const { getDemoParsedData } = await import('./gstParser');
+  for (const docType of ['GSTR1', 'GSTR2B', 'GSTR3B'] as const) {
+    const demo = getDemoParsedData(docType, 'C1');
+    assert.equal(demo.isSampleData, true, `${docType} demo data must be flagged as sample data`);
+  }
+});
+
+test('a genuinely parsed file is never flagged as sample data', async () => {
+  const csv = [
+    'Invoice No.,Invoice Date,Customer Name,GSTIN/UIN,Taxable Value',
+    'INV-1,15-03-2026,Some Customer,29AAACS1234F1Z5,50000',
+  ].join('\n');
+  const file = new File([csv], 'real_upload.csv', { type: 'text/csv' });
+  const result = await parseGstFile(file, 'GSTR1', 'C1', '29');
+  assert.equal(result.isSampleData, undefined);
+});
 test('generateGstr1Json only includes invoices from the selected return period', () => {
   const company = makeTestCompany();
   const sales: SalesInvoice[] = [

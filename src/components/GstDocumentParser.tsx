@@ -75,6 +75,11 @@ export const GstDocumentParser: React.FC<GstDocumentParserProps> = ({
   const handleApplyImport = () => {
     if (!parsedResult) return;
 
+    if (parsedResult.isSampleData) {
+      setImportedStatus('This is sample data for preview only and cannot be imported. Upload a real file to import actual records.');
+      return;
+    }
+
     if (parsedResult.totalRecords === 0) {
       setImportedStatus('No invoice records were extracted. Please upload a valid sales/purchase invoice file before importing.');
       return;
@@ -225,8 +230,10 @@ export const GstDocumentParser: React.FC<GstDocumentParserProps> = ({
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 pb-4 border-b border-slate-100">
             <div>
-              <span className="text-[10px] uppercase font-extrabold bg-emerald-100 text-emerald-800 px-2.5 py-1 rounded-full">
-                Document Parsed Successfully
+              <span className={`text-[10px] uppercase font-extrabold px-2.5 py-1 rounded-full ${
+                parsedResult.isSampleData ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'
+              }`}>
+                {parsedResult.isSampleData ? 'Sample Data Preview — Not Imported' : 'Document Parsed Successfully'}
               </span>
               <h3 className="text-lg font-black text-slate-900 mt-1">
                 Parsed File: {parsedResult.fileName} ({parsedResult.totalRecords} Records)
@@ -234,19 +241,24 @@ export const GstDocumentParser: React.FC<GstDocumentParserProps> = ({
               <p className="text-xs text-slate-500 font-mono mt-0.5">
                 Total Taxable Value: ₹{parsedResult.totalTaxable.toLocaleString('en-IN')} | Total Tax: ₹{parsedResult.totalTax.toLocaleString('en-IN')}
               </p>
+              {parsedResult.isSampleData && (
+                <p className="text-[11px] text-amber-700 font-semibold mt-1">
+                  This is illustrative sample data to preview how parsing works — it cannot be imported into your real GST records.
+                </p>
+              )}
             </div>
 
             <button
               onClick={handleApplyImport}
-              disabled={!parsedResult || parsedResult.totalRecords === 0}
+              disabled={!parsedResult || parsedResult.totalRecords === 0 || parsedResult.isSampleData}
               className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-extrabold shadow-sm transition ${
-                !parsedResult || parsedResult.totalRecords === 0
+                !parsedResult || parsedResult.totalRecords === 0 || parsedResult.isSampleData
                   ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
                   : 'bg-emerald-600 hover:bg-emerald-700 text-white'
               }`}
             >
               <Check className="w-4 h-4 stroke-[3]" />
-              <span>Import Parsed Records to System</span>
+              <span>{parsedResult.isSampleData ? 'Sample Data (Import Disabled)' : 'Import Parsed Records to System'}</span>
             </button>
           </div>
 

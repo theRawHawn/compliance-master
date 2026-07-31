@@ -2,6 +2,7 @@ import * as XLSX from 'xlsx';
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { SalesInvoice, PurchaseInvoice } from '../types';
+import { previousMonthYear } from './calculators/gstLateFeeCalculator';
 
 if (typeof window !== 'undefined') {
   GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/legacy/build/pdf.worker.mjs', import.meta.url).toString();
@@ -25,6 +26,10 @@ export interface ParsedGstDocument {
     itcSgst: number;
   };
   errors: string[];
+  /** True only for illustrative sample data loaded via getDemoParsedData — never for a genuinely
+   *  parsed upload. Consuming UI must use this to block importing sample records into a real
+   *  company's live GST data. */
+  isSampleData?: boolean;
 }
 
 function formatExcelDate(value: number): string {
@@ -240,6 +245,7 @@ export async function parseGstFile(
 
           const warnings: string[] = [];
           if (partyGstin && !gstinValid) warnings.push('Customer/vendor GSTIN does not match the standard 15-character format — verify manually.');
+          else if (partyGstin && !hasValidGstinChecksum(partyGstin)) warnings.push('Customer/vendor GSTIN has an unexpected check character — this may be a typo. Verify before filing.');
 
           const invDate = parsedInvDate || new Date().toISOString().split('T')[0];
           if (!parsedInvDate) warnings.push('Invoice date could not be read from the file — please verify and correct it.');
@@ -354,6 +360,7 @@ export async function parseGstFile(
             invList.forEach((inv: any, invIdx: number) => {
               const warnings: string[] = [];
               if (gstin && !gstinValid) warnings.push('Supplier/recipient GSTIN does not match the standard 15-character format — verify manually.');
+              else if (gstin && !hasValidGstinChecksum(gstin)) warnings.push('Supplier/recipient GSTIN has an unexpected check character — this may be a typo. Verify before filing.');
 
               const invNo = inv.inum || inv.invNo || inv.invoiceNo || '';
               if (!invNo) warnings.push('Invoice number was not found — an auto-generated placeholder was used.');
@@ -489,6 +496,7 @@ function parseTextInvoice(
     const gstin = extractPartyGstin(blockLines, partyName) || extractPartyGstin(lines, partyName) || extractGstin(blockLines) || globalGstin;
     const gstinValid = isStructurallyValidGstin(gstin);
     if (gstin && !gstinValid) warnings.push('Extracted GSTIN does not match the standard 15-character format — verify manually.');
+    else if (gstin && !hasValidGstinChecksum(gstin)) warnings.push('Extracted GSTIN has an unexpected check character — this may be a typo or OCR/parsing error. Verify before filing.');
 
     const rate = extractAmountFromLines(blockLines, ['gst rate', 'tax rate', 'rate', 'gst%']) || 18;
     const taxableValue =
@@ -704,8 +712,53 @@ function resolveStateCodeFromText(raw: string): string {
   return '';
 }
 
+// Character set used by the GST portal's checksum algorithm: digits 0-9 (value = digit),
+// then letters A-Z (value = 10-35).
+const GSTIN_CHECKSUM_CHARSET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+/**
+ * Computes the 15th (checksum) character of a GSTIN from its first 14 characters, using the
+ * Luhn mod-36 algorithm used by the GST portal. Verified against a published worked example:
+ * computeGstinCheckDigit('34AABCB5576G1Z') === 'Q'.
+ */
+export function computeGstinCheckDigit(first14: string): string {
+  const mod = GSTIN_CHECKSUM_CHARSET.length; // 36
+  let factor = 2;
+  let sum = 0;
+  for (let i = first14.length - 1; i >= 0; i -= 1) {
+    const codePoint = GSTIN_CHECKSUM_CHARSET.indexOf(first14[i]);
+    if (codePoint === -1) return '';
+    const product = factor * codePoint;
+    factor = factor === 2 ? 1 : 2;
+    sum += Math.floor(product / mod) + (product % mod);
+  }
+  const checkCodePoint = (mod - (sum % mod)) % mod;
+  return GSTIN_CHECKSUM_CHARSET[checkCodePoint];
+}
+
+/**
+ * Validates a GSTIN's structural format (2-digit state code, 10-char PAN shape, entity code,
+ * fixed 'Z', check character slot). This governs B2B/B2CS classification and ITC eligibility.
+ */
 function isStructurallyValidGstin(gstin: string): boolean {
-  return !!gstin && GSTIN_PATTERN.test(gstin.trim()) && gstin.trim().length === 15;
+  const trimmed = gstin.trim().toUpperCase();
+  return trimmed.length === 15 && GSTIN_PATTERN.test(trimmed);
+}
+
+/**
+ * Verifies a GSTIN's checksum (15th) character against the first 14, using the Luhn mod-36
+ * algorithm used by the GST portal. This is intentionally advisory only (surfaced as an extra
+ * warning for manual review) rather than authoritative for classification: a single incorrect
+ * edge case in this implementation could otherwise cause a genuinely valid GSTIN to be wrongly
+ * excluded from B2B classification or ITC eligibility, which would be a worse outcome than not
+ * having this check at all. Verified against a published worked example:
+ * computeGstinCheckDigit('34AABCB5576G1Z') === 'Q'.
+ */
+export function hasValidGstinChecksum(gstin: string): boolean {
+  const trimmed = gstin.trim().toUpperCase();
+  if (!isStructurallyValidGstin(trimmed)) return false;
+  const expected = computeGstinCheckDigit(trimmed.substring(0, 14));
+  return expected !== '' && expected === trimmed[14];
 }
 
 // Effective 1 Aug 2024 (Notification No. 12/2024-CT, per the 53rd GST Council meeting): B2CL
@@ -906,6 +959,9 @@ export function getDemoParsedData(
   targetType: 'GSTR1' | 'GSTR2B' | 'GSTR3B',
   companyId: string
 ): ParsedGstDocument {
+  const demoMonthYear = previousMonthYear();
+  const demoDay = (day: number) => `${demoMonthYear}-${String(day).padStart(2, '0')}`;
+
   if (targetType === 'GSTR1') {
     return {
       docType: 'GSTR1',
@@ -913,13 +969,14 @@ export function getDemoParsedData(
       totalRecords: 3,
       totalTaxable: 450000,
       totalTax: 81000,
+      isSampleData: true,
       salesInvoices: [
         {
           companyId,
-          invoiceNo: 'INV-2026-088',
-          invoiceDate: '2026-06-18',
-          customerName: 'Reliance Digital Retail Ltd',
-          customerGstin: '27AAACR1234A1Z5',
+          invoiceNo: 'INV-SAMPLE-088',
+          invoiceDate: demoDay(18),
+          customerName: 'Prestige Digital Retail Pvt Ltd (Sample)',
+          customerGstin: '27AAACP1234A1Z5',
           invoiceType: 'B2B',
           posState: 'Maharashtra',
           posCode: '27',
@@ -934,15 +991,15 @@ export function getDemoParsedData(
           sgst: 18000,
           cess: 0,
           reverseCharge: 'N',
-          monthYear: '2026-06',
+          monthYear: demoMonthYear,
           status: 'VALID',
         },
         {
           companyId,
-          invoiceNo: 'INV-2026-089',
-          invoiceDate: '2026-06-22',
-          customerName: 'Infosys BPM Limited',
-          customerGstin: '29AAACI9988B1Z1',
+          invoiceNo: 'INV-SAMPLE-089',
+          invoiceDate: demoDay(22),
+          customerName: 'Horizon BPM Solutions Ltd (Sample)',
+          customerGstin: '29AAACH9988B1Z1',
           invoiceType: 'B2B',
           posState: 'Karnataka',
           posCode: '29',
@@ -957,13 +1014,13 @@ export function getDemoParsedData(
           sgst: 0,
           cess: 0,
           reverseCharge: 'N',
-          monthYear: '2026-06',
+          monthYear: demoMonthYear,
           status: 'VALID',
         },
         {
           companyId,
-          invoiceNo: 'INV-2026-090',
-          invoiceDate: '2026-06-28',
+          invoiceNo: 'INV-SAMPLE-090',
+          invoiceDate: demoDay(28),
           customerName: 'Walk-in Counter Customer',
           customerGstin: '',
           invoiceType: 'B2CS',
@@ -980,7 +1037,7 @@ export function getDemoParsedData(
           sgst: 9000,
           cess: 0,
           reverseCharge: 'N',
-          monthYear: '2026-06',
+          monthYear: demoMonthYear,
           status: 'VALID',
         },
       ],
@@ -990,18 +1047,19 @@ export function getDemoParsedData(
   } else if (targetType === 'GSTR2B') {
     return {
       docType: 'GSTR2B',
-      fileName: 'GSTR2B_Portal_Statement_June2026.pdf',
+      fileName: `GSTR2B_Portal_Statement_Sample.pdf`,
       totalRecords: 3,
       totalTaxable: 320000,
       totalTax: 57600,
+      isSampleData: true,
       salesInvoices: [],
       purchaseInvoices: [
         {
           companyId,
-          invoiceNo: 'AWS-IN-2026-901',
-          invoiceDate: '2026-06-05',
-          vendorName: 'Amazon Web Services India Pvt Ltd',
-          vendorGstin: '27AABCA1234D1ZP',
+          invoiceNo: 'CLOUDNOVA-IN-901',
+          invoiceDate: demoDay(5),
+          vendorName: 'CloudNova Web Services India Pvt Ltd (Sample)',
+          vendorGstin: '27AABCC1234D1ZP',
           posState: 'Maharashtra',
           hsnCode: '998315',
           taxableValue: 180000,
@@ -1010,15 +1068,15 @@ export function getDemoParsedData(
           sgst: 16200,
           cess: 0,
           itcEligible: 'Y',
-          monthYear: '2026-06',
+          monthYear: demoMonthYear,
           status: 'VALID',
           reconciledWith2B: 'MATCHED',
         },
         {
           companyId,
-          invoiceNo: 'ZOHO-2026-441',
-          invoiceDate: '2026-06-10',
-          vendorName: 'Zoho Corporation Pvt Ltd',
+          invoiceNo: 'ZENITH-441',
+          invoiceDate: demoDay(10),
+          vendorName: 'Zenith Corp Services Pvt Ltd (Sample)',
           vendorGstin: '33AAACZ8811A1Z0',
           posState: 'Tamil Nadu',
           hsnCode: '998313',
@@ -1028,15 +1086,15 @@ export function getDemoParsedData(
           sgst: 0,
           cess: 0,
           itcEligible: 'Y',
-          monthYear: '2026-06',
+          monthYear: demoMonthYear,
           status: 'VALID',
           reconciledWith2B: 'MATCHED',
         },
         {
           companyId,
-          invoiceNo: 'AIRTEL-MOB-882',
-          invoiceDate: '2026-06-15',
-          vendorName: 'Bharti Airtel Limited',
+          invoiceNo: 'AIRWAVE-MOB-882',
+          invoiceDate: demoDay(15),
+          vendorName: 'Airwave Telecom Ltd (Sample)',
           vendorGstin: '27AABCB2211C1ZX',
           posState: 'Maharashtra',
           hsnCode: '998411',
@@ -1046,7 +1104,7 @@ export function getDemoParsedData(
           sgst: 5400,
           cess: 0,
           itcEligible: 'Y',
-          monthYear: '2026-06',
+          monthYear: demoMonthYear,
           status: 'VALID',
           reconciledWith2B: 'MATCHED',
         },
@@ -1056,10 +1114,11 @@ export function getDemoParsedData(
   } else {
     return {
       docType: 'GSTR3B',
-      fileName: 'GSTR3B_Filed_Report_June2026.pdf',
+      fileName: `GSTR3B_Filed_Report_Sample.pdf`,
       totalRecords: 1,
       totalTaxable: 550000,
       totalTax: 99000,
+      isSampleData: true,
       salesInvoices: [],
       purchaseInvoices: [],
       gstr3bSummary: {

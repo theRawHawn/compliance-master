@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Company, PurchaseInvoice, SalesInvoice } from '../types';
 import { generateGstr3bSummary } from '../lib/generators/gstGenerator';
+import { resolvePosState } from '../lib/gstParser';
 import {
   CheckCircle2,
   AlertTriangle,
@@ -35,7 +36,8 @@ export const GstReconciliations: React.FC<GstReconciliationsProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [reminderSent, setReminderSent] = useState<string | null>(null);
 
-  // Filter company purchases
+  // Filter company sales and purchases
+  const compSales = sales.filter((s) => s.companyId === company.id);
   const compPurchases = purchases.filter((p) => p.companyId === company.id);
 
   // Generate mock GSTR-2B portal records for realistic reconciliation
@@ -112,6 +114,9 @@ export const GstReconciliations: React.FC<GstReconciliationsProps> = ({
 
   const handleAddMissingToBooks = (rec: any) => {
     if (rec.status === 'MISSING_IN_BOOKS' && onImportPurchases) {
+      const vendorGstin = String(rec.vendorGstin || '');
+      const posCode = /^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/.test(vendorGstin) ? vendorGstin.substring(0, 2) : company.stateCode;
+      const derivedMonthYear = /^\d{4}-\d{2}-\d{2}$/.test(rec.portalDate) ? rec.portalDate.slice(0, 7) : '';
       onImportPurchases([
         {
           companyId: company.id,
@@ -119,7 +124,7 @@ export const GstReconciliations: React.FC<GstReconciliationsProps> = ({
           invoiceDate: rec.portalDate,
           vendorName: rec.vendorName,
           vendorGstin: rec.vendorGstin,
-          posState: 'Maharashtra',
+          posState: resolvePosState(posCode),
           hsnCode: '998313',
           taxableValue: rec.portalTaxable,
           igst: 0,
@@ -127,7 +132,7 @@ export const GstReconciliations: React.FC<GstReconciliationsProps> = ({
           sgst: rec.portalTax / 2,
           cess: 0,
           itcEligible: 'Y',
-          monthYear: '2026-06',
+          monthYear: derivedMonthYear,
           status: 'VALID',
           reconciledWith2B: 'MATCHED',
         },
@@ -142,7 +147,12 @@ export const GstReconciliations: React.FC<GstReconciliationsProps> = ({
   };
 
   // 3B vs Books Summary Calculations
-  const booksGstr3b = generateGstr3bSummary(company, sales, purchases, '2026-06');
+  const reconPeriods = new Set<string>();
+  compSales.forEach((s) => s.monthYear && reconPeriods.add(s.monthYear));
+  compPurchases.forEach((p) => p.monthYear && reconPeriods.add(p.monthYear));
+  const sortedReconPeriods = Array.from(reconPeriods).sort();
+  const reconMonthYear = sortedReconPeriods[sortedReconPeriods.length - 1];
+  const booksGstr3b = generateGstr3bSummary(company, compSales, compPurchases, reconMonthYear);
   const portal3bSummary = {
     outwardTaxable: booksGstr3b.table31_OutwardSupplies.a_taxableSupplies.totalTaxableValue,
     outwardIgst: booksGstr3b.table31_OutwardSupplies.a_taxableSupplies.integratedTax,
@@ -192,6 +202,15 @@ export const GstReconciliations: React.FC<GstReconciliationsProps> = ({
           {reminderSent}
         </div>
       )}
+
+      <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs font-semibold text-amber-800 flex items-start gap-2">
+        <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+        <span>
+          This view is not connected to the live GST portal. It illustrates what a reconciliation
+          looks like using records derived from your own books, not data actually fetched from
+          GSTR-2B/GSTR-3B. Always verify against the real figures on the GST portal before filing.
+        </span>
+      </div>
 
       {/* SUB-TAB 1: GSTR-2B VS BOOKS RECONCILIATION */}
       {subTab === '2B_VS_BOOKS' && (
@@ -408,8 +427,8 @@ export const GstReconciliations: React.FC<GstReconciliationsProps> = ({
               <p className="text-xs text-slate-500">Cross-verifies Outward Tax Liabilities and Input Tax Credit claims before final portal submission.</p>
             </div>
 
-            <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-xl">
-              <ShieldCheck className="w-4 h-4 text-emerald-600" /> Zero Discrepancy (Books & Portal in Sync)
+            <div className="flex items-center gap-1.5 text-xs font-bold text-slate-700 bg-slate-100 border border-slate-200 px-3 py-1.5 rounded-xl">
+              <HelpCircle className="w-4 h-4 text-slate-500" /> Internal Self-Check Only (Not Verified Against Live Portal Data)
             </div>
           </div>
 
@@ -419,7 +438,7 @@ export const GstReconciliations: React.FC<GstReconciliationsProps> = ({
                 <tr>
                   <th className="py-3 px-4 font-sans">Return Section</th>
                   <th className="py-3 px-4 text-right">ERP Sales/Purchase Books (₹)</th>
-                  <th className="py-3 px-4 text-right">GSTR-3B Portal Draft (₹)</th>
+                  <th className="py-3 px-4 text-right">Books-Derived Draft (₹)</th>
                   <th className="py-3 px-4 text-right">Variance (₹)</th>
                   <th className="py-3 px-4 text-center font-sans">Status</th>
                 </tr>

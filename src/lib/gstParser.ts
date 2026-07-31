@@ -677,7 +677,7 @@ const GST_STATE_CODES: Record<string, string> = {
   '36': 'Telangana', '37': 'Andhra Pradesh', '38': 'Ladakh', '97': 'Other Territory',
 };
 
-function resolvePosState(posCode: string): string {
+export function resolvePosState(posCode: string): string {
   return GST_STATE_CODES[posCode] || 'Unknown / Unverified State';
 }
 

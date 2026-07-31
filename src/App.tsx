@@ -400,13 +400,23 @@ export default function App() {
   const handleGenerateFile = async (fileType: string) => {
     if (!selectedCompany) return;
     try {
+      const companySales = sales.filter((s) => s.companyId === selectedCompany.id);
+      const companyPurchases = purchases.filter((p) => p.companyId === selectedCompany.id);
+      const periods = new Set<string>();
+      companySales.forEach((s) => s.monthYear && periods.add(s.monthYear));
+      companyPurchases.forEach((p) => p.monthYear && periods.add(p.monthYear));
+      const sortedPeriods = Array.from(periods).sort();
+      const now = new Date();
+      const fallbackPeriod = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+      const monthYearOrQuarter = sortedPeriods[sortedPeriods.length - 1] || fallbackPeriod;
+
       const res = await fetch('/api/files/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           companyId: selectedCompany.id,
           fileType,
-          monthYearOrQuarter: '2026-06',
+          monthYearOrQuarter,
         }),
       });
 

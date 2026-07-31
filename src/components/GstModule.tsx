@@ -108,7 +108,7 @@ export const GstModule: React.FC<GstModuleProps> = ({
               GSTIN: {company.gstin}
             </span>
             <span className="text-xs font-semibold text-slate-500 flex items-center gap-1">
-              <Calendar className="w-3.5 h-3.5 text-slate-400" /> Return Period: June 2026
+              <Calendar className="w-3.5 h-3.5 text-slate-400" /> {compSales.length + compPurchases.length} Invoices on File
             </span>
           </div>
           <h1 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight flex items-center gap-2 mt-1">
@@ -379,8 +379,8 @@ export const GstModule: React.FC<GstModuleProps> = ({
       {activeTab === 'GSTR3B' && (
         <Gst3bAutoSetoff
           company={company}
-          sales={sales}
-          purchases={purchases}
+          sales={compSales}
+          purchases={compPurchases}
           onGenerateFile={onGenerateFile}
         />
       )}
@@ -389,8 +389,8 @@ export const GstModule: React.FC<GstModuleProps> = ({
       {activeTab === 'RECON' && (
         <GstReconciliations
           company={company}
-          sales={sales}
-          purchases={purchases}
+          sales={compSales}
+          purchases={compPurchases}
           onImportPurchases={onImportPurchases}
         />
       )}

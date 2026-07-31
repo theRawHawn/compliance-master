@@ -291,6 +291,13 @@ app.get('/api/payroll', (req, res) => {
 });
 
 // File Generation Router
+function deriveFallbackPeriod(records: Array<{ monthYear?: string }>): string {
+  const periods = records.map((r) => r.monthYear).filter((m): m is string => !!m).sort();
+  if (periods.length > 0) return periods[periods.length - 1];
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+}
+
 app.post('/api/files/generate', (req, res) => {
   const { companyId, fileType, monthYearOrQuarter } = req.body;
   const company = companies.find((c) => c.id === companyId);
@@ -300,23 +307,23 @@ app.post('/api/files/generate', (req, res) => {
 
   if (fileType === 'GSTR1_JSON') {
     const compSales = salesInvoices.filter((s) => s.companyId === companyId);
-    file = generateGstr1Json(company, compSales, monthYearOrQuarter || '2026-06');
+    file = generateGstr1Json(company, compSales, monthYearOrQuarter || deriveFallbackPeriod(compSales));
   } else if (fileType === 'GSTR1_REGISTER_CSV') {
     const compSales = salesInvoices.filter((s) => s.companyId === companyId);
-    file = generateGstr1SalesRegisterCsv(company, compSales, monthYearOrQuarter || '2026-06');
+    file = generateGstr1SalesRegisterCsv(company, compSales, monthYearOrQuarter || deriveFallbackPeriod(compSales));
   } else if (fileType === 'GSTR1_B2B_CSV') {
     const compSales = salesInvoices.filter((s) => s.companyId === companyId);
-    file = generateGstr1B2bCsv(company, compSales, monthYearOrQuarter || '2026-06');
+    file = generateGstr1B2bCsv(company, compSales, monthYearOrQuarter || deriveFallbackPeriod(compSales));
   } else if (fileType === 'GSTR1_B2CS_CSV') {
     const compSales = salesInvoices.filter((s) => s.companyId === companyId);
-    file = generateGstr1B2csCsv(company, compSales, monthYearOrQuarter || '2026-06');
+    file = generateGstr1B2csCsv(company, compSales, monthYearOrQuarter || deriveFallbackPeriod(compSales));
   } else if (fileType === 'GSTR1_HSN_CSV') {
     const compSales = salesInvoices.filter((s) => s.companyId === companyId);
-    file = generateGstr1HsnCsv(company, compSales, monthYearOrQuarter || '2026-06');
+    file = generateGstr1HsnCsv(company, compSales, monthYearOrQuarter || deriveFallbackPeriod(compSales));
   } else if (fileType === 'GSTR3B_EXCEL') {
     const compSales = salesInvoices.filter((s) => s.companyId === companyId);
     const compPurchases = purchaseInvoices.filter((p) => p.companyId === companyId);
-    file = generateGstr3bExcel(company, compSales, compPurchases, monthYearOrQuarter || '2026-06');
+    file = generateGstr3bExcel(company, compSales, compPurchases, monthYearOrQuarter || deriveFallbackPeriod([...compSales, ...compPurchases]));
   } else if (fileType === 'TDS_26Q_FVU') {
     const compPayments = vendorPayments.filter((v) => v.companyId === companyId);
     file = generateTds26qFvu(company, compPayments, 'Q1', company.financialYear);

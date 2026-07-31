@@ -4,7 +4,7 @@
 
 import { Company, SalesInvoice, PurchaseInvoice, GeneratedFile } from '../../types';
 import * as XLSX from 'xlsx';
-import { calculateGstLateFeeAndInterest, TurnoverSlab } from '../calculators/gstLateFeeCalculator';
+import { calculateGstLateFeeAndInterest, TurnoverSlab, previousMonthYear, todayIso } from '../calculators/gstLateFeeCalculator';
 
 export function formatGstPeriod(monthYear: string): string {
   // Input: '2026-06' -> Output: '062026'
@@ -13,7 +13,8 @@ export function formatGstPeriod(monthYear: string): string {
   return `${month}${year}`;
 }
 
-export function generateGstr1Json(company: Company, sales: SalesInvoice[], monthYear: string): GeneratedFile {
+export function generateGstr1Json(company: Company, allSales: SalesInvoice[], monthYear: string): GeneratedFile {
+  const sales = allSales.filter((s) => s.monthYear === monthYear);
   const period = formatGstPeriod(monthYear);
   const companyGstin = company.gstin.trim().toUpperCase();
 
@@ -60,7 +61,7 @@ export function generateGstr1Json(company: Company, sales: SalesInvoice[], month
         inv_type: 'R',
         itms: [{ num: 1, itm_det: itmDet }],
       });
-    } else if (s.invoiceType === 'B2CL' || (isInterstate && invVal > 250000 && (!s.customerGstin || s.customerGstin.length < 15))) {
+    } else if (s.invoiceType === 'B2CL' || (isInterstate && invVal > 100000 && (!s.customerGstin || s.customerGstin.length < 15))) {
       b2clList.push({
         pos: s.posCode,
         inv: [{
@@ -163,12 +164,20 @@ export function generateGstr1Json(company: Company, sales: SalesInvoice[], month
     csamt: Number(h.csamt.toFixed(2)),
   }));
 
+  // gt/cur_gt (aggregate annual turnover) cannot be reliably derived from a single period's
+  // invoices alone -- the GST portal expects the taxpayer's actual PAN-level turnover for the
+  // relevant financial year, which this tool does not independently know. Using this period's
+  // total as a placeholder is clearly wrong to leave unflagged, so it's marked for verification
+  // rather than presented as a real figure.
+  const periodTotalValue = sales.reduce((sum, s) => sum + s.taxableValue + s.igst + s.cgst + s.sgst + s.cess, 0);
+  const gtEstimate = Number(periodTotalValue.toFixed(2));
+
   // Master GST Offline Payload
   const gstr1Payload = {
     gstin: companyGstin,
     fp: period,
-    gt: 15000000.0,
-    cur_gt: 15000000.0,
+    gt: gtEstimate, // VERIFY: replace with actual PAN-level aggregate annual turnover before filing
+    cur_gt: gtEstimate, // VERIFY: replace with actual PAN-level aggregate annual turnover before filing
     version: 'GSTR1-V3.1.2',
     hash: 'hash',
     b2b: b2bArray,
@@ -205,7 +214,8 @@ export function generateGstr1Json(company: Company, sales: SalesInvoice[], month
   };
 }
 
-export function generateGstr1SalesRegisterCsv(company: Company, sales: SalesInvoice[], monthYear: string): GeneratedFile {
+export function generateGstr1SalesRegisterCsv(company: Company, allSales: SalesInvoice[], monthYear: string): GeneratedFile {
+  const sales = allSales.filter((s) => s.monthYear === monthYear);
   const period = formatGstPeriod(monthYear);
   const rows: any[][] = [
     ['Sales Register & Audit Report', company.legalName, company.gstin, `Period: ${monthYear}`],
@@ -273,7 +283,8 @@ export function generateGstr1SalesRegisterCsv(company: Company, sales: SalesInvo
   };
 }
 
-export function generateGstr1B2bCsv(company: Company, sales: SalesInvoice[], monthYear: string): GeneratedFile {
+export function generateGstr1B2bCsv(company: Company, allSales: SalesInvoice[], monthYear: string): GeneratedFile {
+  const sales = allSales.filter((s) => s.monthYear === monthYear);
   const period = formatGstPeriod(monthYear);
   const b2bSales = sales.filter((s) => s.invoiceType === 'B2B' || (s.customerGstin && s.customerGstin.length === 15));
 
@@ -334,7 +345,8 @@ export function generateGstr1B2bCsv(company: Company, sales: SalesInvoice[], mon
   };
 }
 
-export function generateGstr1B2csCsv(company: Company, sales: SalesInvoice[], monthYear: string): GeneratedFile {
+export function generateGstr1B2csCsv(company: Company, allSales: SalesInvoice[], monthYear: string): GeneratedFile {
+  const sales = allSales.filter((s) => s.monthYear === monthYear);
   const period = formatGstPeriod(monthYear);
   const b2csSales = sales.filter((s) => s.invoiceType === 'B2CS' || !s.customerGstin || s.customerGstin.length < 15);
 
@@ -342,8 +354,7 @@ export function generateGstr1B2csCsv(company: Company, sales: SalesInvoice[], mo
   const groupMap: Record<string, { type: string; pos: string; posCode: string; rate: number; txval: number; cess: number }> = {};
 
   b2csSales.forEach((s) => {
-    const isInter = s.posCode !== company.stateCode;
-    const splyType = isInter ? 'OE' : 'OE'; // Other Than E-Commerce
+    const splyType = 'OE'; // Other Than E-Commerce
     const key = `${splyType}_${s.posCode}_${s.rate}`;
     if (!groupMap[key]) {
       groupMap[key] = {
@@ -384,7 +395,8 @@ export function generateGstr1B2csCsv(company: Company, sales: SalesInvoice[], mo
   };
 }
 
-export function generateGstr1HsnCsv(company: Company, sales: SalesInvoice[], monthYear: string): GeneratedFile {
+export function generateGstr1HsnCsv(company: Company, allSales: SalesInvoice[], monthYear: string): GeneratedFile {
+  const sales = allSales.filter((s) => s.monthYear === monthYear);
   const period = formatGstPeriod(monthYear);
 
   const hsnMap: Record<string, { hsn: string; desc: string; uqc: string; qty: number; val: number; txval: number; iamt: number; camt: number; samt: number; cess: number }> = {};
@@ -464,12 +476,15 @@ export function generateGstr1HsnCsv(company: Company, sales: SalesInvoice[], mon
 
 export function generateGstr3bSummary(
   company: Company,
-  sales: SalesInvoice[],
-  purchases: PurchaseInvoice[],
-  monthYear: string = '2026-06',
-  actualFilingDate: string = '2026-08-15',
+  allSales: SalesInvoice[],
+  allPurchases: PurchaseInvoice[],
+  monthYear: string = previousMonthYear(),
+  actualFilingDate: string = todayIso(),
   turnoverSlab: TurnoverSlab = '1.5CR_TO_5CR'
 ) {
+  const sales = allSales.filter((s) => s.monthYear === monthYear);
+  const purchases = allPurchases.filter((p) => p.monthYear === monthYear);
+
   // 3.1 Outward supplies summary
   let taxableOutward = 0;
   let igstOutward = 0;
@@ -562,8 +577,8 @@ export function generateGstr3bExcel(
   company: Company,
   sales: SalesInvoice[],
   purchases: PurchaseInvoice[],
-  monthYear: string = '2026-06',
-  actualFilingDate: string = '2026-08-15',
+  monthYear: string = previousMonthYear(),
+  actualFilingDate: string = todayIso(),
   turnoverSlab: TurnoverSlab = '1.5CR_TO_5CR'
 ): GeneratedFile {
   const summary = generateGstr3bSummary(company, sales, purchases, monthYear, actualFilingDate, turnoverSlab);

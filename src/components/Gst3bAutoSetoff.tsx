@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Company, SalesInvoice, PurchaseInvoice } from '../types';
 import { generateGstr3bSummary } from '../lib/generators/gstGenerator';
-import { calculateGstLateFeeAndInterest, TurnoverSlab } from '../lib/calculators/gstLateFeeCalculator';
+import { calculateGstLateFeeAndInterest, TurnoverSlab, previousMonthYear, todayIso } from '../lib/calculators/gstLateFeeCalculator';
 import {
   Scale,
   Wallet,
@@ -21,6 +21,18 @@ import {
   FileText
 } from 'lucide-react';
 
+function addDaysToIsoDate(iso: string, days: number): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().split('T')[0];
+}
+
+function formatDisplayDate(iso: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
+  const d = new Date(`${iso}T00:00:00Z`);
+  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' });
+}
+
 interface Gst3bAutoSetoffProps {
   company: Company;
   sales: SalesInvoice[];
@@ -34,8 +46,19 @@ export const Gst3bAutoSetoff: React.FC<Gst3bAutoSetoffProps> = ({
   purchases,
   onGenerateFile,
 }) => {
+  // Default the return period to the most recent month actually present in the data, since
+  // hardcoding a fixed period regardless of what was uploaded would silently show a blank/wrong
+  // return whenever the data doesn't happen to fall in that one hardcoded month.
+  const availableMonthYears = useMemo(() => {
+    const months = new Set<string>();
+    sales.forEach((s) => s.monthYear && months.add(s.monthYear));
+    purchases.forEach((p) => p.monthYear && months.add(p.monthYear));
+    return Array.from(months).sort().reverse();
+  }, [sales, purchases]);
+
+  const [monthYear, setMonthYear] = useState<string>(availableMonthYears[0] || previousMonthYear());
   // Configurable state for Filing Date & Turnover Slab for late fee calculations
-  const [actualFilingDate, setActualFilingDate] = useState<string>('2026-08-15');
+  const [actualFilingDate, setActualFilingDate] = useState<string>(todayIso());
   const [turnoverSlab, setTurnoverSlab] = useState<TurnoverSlab>('1.5CR_TO_5CR');
 
   // Compute late fee & interest engine results
@@ -43,12 +66,12 @@ export const Gst3bAutoSetoff: React.FC<Gst3bAutoSetoffProps> = ({
     company,
     sales,
     purchases,
-    '2026-06',
+    monthYear,
     actualFilingDate,
     turnoverSlab
   );
 
-  const summary = generateGstr3bSummary(company, sales, purchases, '2026-06', actualFilingDate, turnoverSlab);
+  const summary = generateGstr3bSummary(company, sales, purchases, monthYear, actualFilingDate, turnoverSlab);
 
   // Table 3.1 Gross Output Tax Liability
   const outIgst = summary.table31_OutwardSupplies.a_taxableSupplies.integratedTax;
@@ -171,41 +194,58 @@ export const Gst3bAutoSetoff: React.FC<Gst3bAutoSetoffProps> = ({
 
           <div className="flex flex-wrap gap-1.5 text-xs">
             <button
-              onClick={() => setActualFilingDate('2026-07-20')}
+              onClick={() => setActualFilingDate(lateFeeResult.gstr3bDueDate)}
               className={`px-3 py-1.5 rounded-lg text-xs font-bold transition ${
-                actualFilingDate === '2026-07-20' ? 'bg-emerald-600 text-white shadow-xs' : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
+                actualFilingDate === lateFeeResult.gstr3bDueDate ? 'bg-emerald-600 text-white shadow-xs' : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
               }`}
             >
-              On-Time (20 Jul)
+              On-Time ({formatDisplayDate(lateFeeResult.gstr3bDueDate)})
             </button>
             <button
-              onClick={() => setActualFilingDate('2026-08-05')}
+              onClick={() => setActualFilingDate(addDaysToIsoDate(lateFeeResult.gstr3bDueDate, 16))}
               className={`px-3 py-1.5 rounded-lg text-xs font-bold transition ${
-                actualFilingDate === '2026-08-05' ? 'bg-amber-600 text-white shadow-xs' : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
+                actualFilingDate === addDaysToIsoDate(lateFeeResult.gstr3bDueDate, 16) ? 'bg-amber-600 text-white shadow-xs' : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
               }`}
             >
-              16 Days Late (05 Aug)
+              16 Days Late
             </button>
             <button
-              onClick={() => setActualFilingDate('2026-08-20')}
+              onClick={() => setActualFilingDate(addDaysToIsoDate(lateFeeResult.gstr3bDueDate, 31))}
               className={`px-3 py-1.5 rounded-lg text-xs font-bold transition ${
-                actualFilingDate === '2026-08-20' ? 'bg-orange-600 text-white shadow-xs' : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
+                actualFilingDate === addDaysToIsoDate(lateFeeResult.gstr3bDueDate, 31) ? 'bg-orange-600 text-white shadow-xs' : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
               }`}
             >
-              31 Days Late (20 Aug)
+              31 Days Late
             </button>
             <button
-              onClick={() => setActualFilingDate('2026-09-20')}
+              onClick={() => setActualFilingDate(addDaysToIsoDate(lateFeeResult.gstr3bDueDate, 62))}
               className={`px-3 py-1.5 rounded-lg text-xs font-bold transition ${
-                actualFilingDate === '2026-09-20' ? 'bg-red-600 text-white shadow-xs' : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
+                actualFilingDate === addDaysToIsoDate(lateFeeResult.gstr3bDueDate, 62) ? 'bg-red-600 text-white shadow-xs' : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
               }`}
             >
-              62 Days Late (20 Sep)
+              62 Days Late
             </button>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+          <div>
+            <label className="block text-xs font-bold text-slate-800 mb-1">
+              Return Period
+            </label>
+            <input
+              type="month"
+              value={monthYear}
+              onChange={(e) => e.target.value && setMonthYear(e.target.value)}
+              className="w-full px-3 py-2 rounded-xl border border-amber-300 bg-white font-mono text-xs text-slate-900 font-bold focus:ring-2 focus:ring-amber-500"
+            />
+            <p className="text-[11px] text-slate-500 mt-1">
+              {availableMonthYears.length > 0
+                ? `Data available for: ${availableMonthYears.join(', ')}`
+                : 'No dated invoices found — showing an empty period'}
+            </p>
+          </div>
+
           <div>
             <label className="block text-xs font-bold text-slate-800 mb-1 flex items-center gap-1">
               <Calendar className="w-3.5 h-3.5 text-amber-700" /> Intended / Actual Filing Date
@@ -216,7 +256,7 @@ export const Gst3bAutoSetoff: React.FC<Gst3bAutoSetoffProps> = ({
               onChange={(e) => setActualFilingDate(e.target.value)}
               className="w-full px-3 py-2 rounded-xl border border-amber-300 bg-white font-mono text-xs text-slate-900 font-bold focus:ring-2 focus:ring-amber-500"
             />
-            <p className="text-[11px] text-slate-500 mt-1">GSTR-3B Statutory Due Date: <span className="font-bold text-slate-800">20 July 2026</span></p>
+            <p className="text-[11px] text-slate-500 mt-1">GSTR-3B Statutory Due Date: <span className="font-bold text-slate-800">{formatDisplayDate(lateFeeResult.gstr3bDueDate)}</span></p>
           </div>
 
           <div>

@@ -1,6 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseGstFile } from './gstParser';
+import { generateGstr1Json, generateGstr3bSummary } from './generators/gstGenerator';
+import { calculateGstLateFeeAndInterest, computeItcSetoff } from './calculators/gstLateFeeCalculator';
+import type { Company, SalesInvoice } from '../types';
+
+function makeTestCompany(overrides: Partial<Company> = {}): Company {
+  return {
+    id: 'C1', userId: 'U1', legalName: 'Test Co', gstin: '29AAACT1234F1Z5', pan: 'AAACT1234F',
+    tan: 'BLRT12345A', state: 'Karnataka', stateCode: '29',
+    address: '1 MG Road', city: 'Bengaluru', pincode: '560001', contactPerson: 'Test Person',
+    email: 'test@example.com', mobile: '9999999999', financialYear: '2026-27',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    ...overrides,
+  };
+}
 
 test('parses GSTR1 CSV with correct invoice date, tax and rate', async () => {
   const csv = [
@@ -255,6 +269,7 @@ test('classifies B2CL only for inter-state B2C invoices above the current Rs.1 l
   assert.equal(result3.salesInvoices[0].invoiceType, 'B2CS');
 });
 
+
 test('derives monthYear from the actual invoice date instead of a fixed value', async () => {
   const csv = [
     'Invoice No.,Invoice Date,Customer Name,GSTIN/UIN,Taxable Value',
@@ -265,4 +280,100 @@ test('derives monthYear from the actual invoice date instead of a fixed value', 
 
   assert.equal(result.salesInvoices[0].invoiceDate, '2026-03-15');
   assert.equal(result.salesInvoices[0].monthYear, '2026-03');
+});
+
+test('generateGstr1Json only includes invoices from the selected return period', () => {
+  const company = makeTestCompany();
+  const sales: SalesInvoice[] = [
+    { id: '1', companyId: 'C1', invoiceNo: 'INV-1', invoiceDate: '2026-06-10', customerName: 'A',
+      customerGstin: '29AAACA1234F1Z5', posState: 'Karnataka', posCode: '29', invoiceType: 'B2B',
+      reverseCharge: 'N', hsnCode: '998313', description: 'x', quantity: 1, uqc: 'NOS', rate: 18,
+      taxableValue: 10000, igst: 0, cgst: 900, sgst: 900, cess: 0, monthYear: '2026-06', status: 'VALID' },
+    { id: '2', companyId: 'C1', invoiceNo: 'INV-2', invoiceDate: '2026-05-10', customerName: 'B',
+      customerGstin: '29AAACB1234F1Z5', posState: 'Karnataka', posCode: '29', invoiceType: 'B2B',
+      reverseCharge: 'N', hsnCode: '998313', description: 'x', quantity: 1, uqc: 'NOS', rate: 18,
+      taxableValue: 500000, igst: 0, cgst: 45000, sgst: 45000, cess: 0, monthYear: '2026-05', status: 'VALID' },
+  ];
+
+  const file = generateGstr1Json(company, sales, '2026-06');
+  const payload = JSON.parse(file.fileContent);
+  const allInvNos = payload.b2b.flatMap((b: any) => b.inv.map((i: any) => i.inum));
+  // Regression: the May invoice must not leak into the June return.
+  assert.deepEqual(allInvNos, ['INV-1']);
+  assert.equal(file.recordCount, 1);
+});
+
+test('generateGstr3bSummary only sums invoices from the selected return period', () => {
+  const company = makeTestCompany();
+  const sales: SalesInvoice[] = [
+    { id: '1', companyId: 'C1', invoiceNo: 'INV-1', invoiceDate: '2026-06-10', customerName: 'A',
+      customerGstin: '29AAACA1234F1Z5', posState: 'Karnataka', posCode: '29', invoiceType: 'B2B',
+      reverseCharge: 'N', hsnCode: '998313', description: 'x', quantity: 1, uqc: 'NOS', rate: 18,
+      taxableValue: 10000, igst: 0, cgst: 900, sgst: 900, cess: 0, monthYear: '2026-06', status: 'VALID' },
+    { id: '2', companyId: 'C1', invoiceNo: 'INV-2', invoiceDate: '2026-05-10', customerName: 'B',
+      customerGstin: '29AAACB1234F1Z5', posState: 'Karnataka', posCode: '29', invoiceType: 'B2B',
+      reverseCharge: 'N', hsnCode: '998313', description: 'x', quantity: 1, uqc: 'NOS', rate: 18,
+      taxableValue: 500000, igst: 0, cgst: 45000, sgst: 45000, cess: 0, monthYear: '2026-05', status: 'VALID' },
+  ];
+
+  const summary = generateGstr3bSummary(company, sales, [], '2026-06', '2026-07-15', '1.5CR_TO_5CR');
+  // Regression: only the June invoice (taxable 10000) should be counted, not the May one (500000).
+  assert.equal(summary.table31_OutwardSupplies.a_taxableSupplies.totalTaxableValue, 10000);
+  assert.equal(summary.table31_OutwardSupplies.a_taxableSupplies.centralTax, 900);
+});
+
+test('QRMP filers get quarterly due dates based on their state category', () => {
+  // Karnataka (29) is a Category X state -> 22nd.
+  const kaCompany = makeTestCompany({ gstFilingFrequency: 'QRMP' });
+  const kaResult = calculateGstLateFeeAndInterest(kaCompany, [], [], '2026-05', '2026-07-20', '1.5CR_TO_5CR');
+  // May falls in the Apr-Jun quarter -> filing month is July.
+  assert.equal(kaResult.gstr1DueDate, '2026-07-13');
+  assert.equal(kaResult.gstr3bDueDate, '2026-07-22');
+
+  // Uttar Pradesh (09) is a Category Y state -> 24th.
+  const upCompany = makeTestCompany({
+    id: 'C2', legalName: 'Test Co UP', gstin: '09AAACT1234F1Z5', tan: 'LKOT12345A',
+    state: 'Uttar Pradesh', stateCode: '09', gstFilingFrequency: 'QRMP',
+  });
+  const upResult = calculateGstLateFeeAndInterest(upCompany, [], [], '2026-05', '2026-07-20', '1.5CR_TO_5CR');
+  assert.equal(upResult.gstr3bDueDate, '2026-07-24');
+
+  // Monthly filers are unaffected.
+  const monthlyCompany: Company = { ...kaCompany, gstFilingFrequency: 'MONTHLY' };
+  const monthlyResult = calculateGstLateFeeAndInterest(monthlyCompany, [], [], '2026-05', '2026-06-20', '1.5CR_TO_5CR');
+  assert.equal(monthlyResult.gstr1DueDate, '2026-06-11');
+  assert.equal(monthlyResult.gstr3bDueDate, '2026-06-20');
+});
+
+test('computeItcSetoff follows Rule 88A cross-utilization order', () => {
+  // IGST credit of 5000 should first clear IGST liability (2000, leaving 3000 credit), then
+  // fully clear CGST liability (3000, leaving 0 credit) -- before any CGST/SGST credit is used.
+  // With no IGST credit left over, SGST liability is untouched (no CGST/SGST credit was supplied).
+  const result = computeItcSetoff(
+    { igst: 2000, cgst: 3000, sgst: 3000, cess: 0 },
+    { igst: 5000, cgst: 0, sgst: 0, cess: 0 }
+  );
+  assert.equal(result.igst, 0); // fully cleared by IGST credit
+  assert.equal(result.cgst, 0); // fully cleared by remaining IGST credit (3000)
+  assert.equal(result.sgst, 3000); // no IGST credit left, and no SGST credit supplied
+});
+
+test('computeItcSetoff lets IGST credit spill over into both CGST and SGST when there is enough', () => {
+  const result = computeItcSetoff(
+    { igst: 1000, cgst: 2000, sgst: 2000, cess: 0 },
+    { igst: 6000, cgst: 500, sgst: 500, cess: 0 }
+  );
+  // IGST credit: 1000 clears IGST, 2000 clears CGST, 2000 clears SGST -> 1000 IGST credit left over (unused, per Rule 88A it cannot refund/carry sideways beyond IGST/CGST/SGST).
+  assert.equal(result.igst, 0);
+  assert.equal(result.cgst, 0);
+  assert.equal(result.sgst, 0);
+});
+
+test('computeItcSetoff never lets CGST credit offset SGST liability or vice versa', () => {
+  const result = computeItcSetoff(
+    { igst: 0, cgst: 1000, sgst: 1000, cess: 0 },
+    { igst: 0, cgst: 5000, sgst: 0, cess: 0 }
+  );
+  assert.equal(result.cgst, 0); // cleared by its own CGST credit
+  assert.equal(result.sgst, 1000); // untouched -- CGST credit must never offset SGST liability
 });

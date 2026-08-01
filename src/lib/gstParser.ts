@@ -109,6 +109,14 @@ function parseDateValue(value: any): string {
   return '';
 }
 
+// pdfjs's text items are a flat stream with no inherent line structure; item.hasEOL marks the
+// end of a visual line in the source PDF. Without using it, an entire page of a real multi-line
+// invoice collapses into a single line of text when naively joined with spaces, which breaks
+// every piece of line-based extraction logic downstream (party name, invoice number, date).
+export function reconstructPdfPageText(items: Array<{ str: string; hasEOL?: boolean }>): string {
+  return items.map((item) => item.str + (item.hasEOL ? '\n' : ' ')).join('');
+}
+
 /**
  * Parses Excel or CSV files for GSTR-1 or GSTR-2B or GSTR-3B
  */
@@ -331,7 +339,7 @@ export async function parseGstFile(
       for (let i = 1; i <= pdf.numPages; i += 1) {
         const page = await pdf.getPage(i);
         const content = await page.getTextContent();
-        text += content.items.map((item: any) => item.str).join(' ') + '\n';
+        text += reconstructPdfPageText(content.items as any) + '\n';
       }
 
       const parsed = parseTextInvoice(text, targetType, companyId, stateCode);

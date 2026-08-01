@@ -298,6 +298,31 @@ test('getDemoParsedData always marks its output as sample data, for every doc ty
   }
 });
 
+test('PDF text reconstruction preserves line breaks instead of flattening a page into one line', async () => {
+  const { reconstructPdfPageText } = await import('./gstParser');
+  // Captured from a real multi-line PDF invoice via pdfjs's getTextContent(): each line is its
+  // own text item, and hasEOL is true at the end of every line except the very last item.
+  const items = [
+    { str: 'Tax Invoice', hasEOL: true },
+    { str: 'Invoice No. INV/25-26/0456', hasEOL: true },
+    { str: 'Dated 15-Jun-2026', hasEOL: true },
+    { str: 'Buyer (Bill to)', hasEOL: true },
+    { str: 'Shree Balaji Traders', hasEOL: true },
+    { str: 'GSTIN/UIN: 29AAACS1234F1Z5', hasEOL: true },
+    { str: 'Taxable Value: 50000', hasEOL: true },
+    { str: 'CGST 9%: 4500', hasEOL: true },
+    { str: 'SGST 9%: 4500', hasEOL: false },
+  ];
+  const text = reconstructPdfPageText(items);
+  const lines = text.split('\n').filter(Boolean);
+  // Regression: this must produce 9 separate lines, not one flattened line joined with spaces
+  // (which was the actual bug -- every line of a real PDF invoice collapsed into a single line,
+  // silently breaking party-name/date/amount extraction with no error surfaced).
+  assert.equal(lines.length, 9);
+  assert.equal(lines[3].trim(), 'Buyer (Bill to)');
+  assert.equal(lines[4].trim(), 'Shree Balaji Traders');
+});
+
 test('a genuinely parsed file is never flagged as sample data', async () => {
   const csv = [
     'Invoice No.,Invoice Date,Customer Name,GSTIN/UIN,Taxable Value',

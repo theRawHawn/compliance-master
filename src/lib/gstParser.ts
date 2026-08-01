@@ -210,7 +210,7 @@ export async function parseGstFile(
             (row[0] && String(row[0]).trim().length > 1 ? row[0] : undefined);
 
           const invDateRaw = getRowVal(row, ['invoicedate', 'invdate', 'date', 'idt', 'billdate', 'docdate']);
-          const partyNameRaw = getRowVal(row, ['customername', 'vendorname', 'suppliername', 'partyname', 'receivername', 'customer', 'vendor', 'party', 'name', 'client']) || 'Enterprise Client / Vendor';
+          const partyNameRaw = getRowVal(row, ['customername', 'vendorname', 'suppliername', 'partyname', 'receivername', 'customer', 'vendor', 'party', 'name', 'client']) || '';
           const partyGstinRaw = getRowVal(row, ['customergstin', 'vendorgstin', 'suppliergstin', 'gstin', 'ctin', 'uin', 'partygstin']) || '';
 
           const taxableValRaw = getRowVal(row, ['taxablevalue', 'taxableamt', 'taxable', 'txval', 'amount', 'val', 'subtotal', 'total']) || 0;
@@ -350,7 +350,7 @@ export async function parseGstFile(
         b2bArray.forEach((supplier: any) => {
           const gstin = String(supplier.ctin || supplier.gstin || '').trim();
           const gstinValid = isStructurallyValidGstin(gstin);
-          const name = supplier.cname || supplier.tradeName || supplier.legalName || 'Vendor / Recipient';
+          const name = supplier.cname || supplier.tradeName || supplier.legalName || '';
           const invList = supplier.inv || supplier.invoices || [supplier];
           const posCode = gstinValid ? gstin.substring(0, 2) : stateCode;
           const posState = resolvePosState(posCode);
@@ -381,11 +381,12 @@ export async function parseGstFile(
 
                 if (targetType === 'GSTR1') {
                   const invType = classifyGstr1InvoiceType(gstinValid, isInterState, taxableValue);
+                  if (!name) warnings.push('Customer/vendor name was not found — a generic placeholder was used.');
                   result.salesInvoices.push({
                     companyId,
                     invoiceNo: invNo || `INV-REVIEW-${result.salesInvoices.length + 101}-${invIdx}`,
                     invoiceDate: invDate,
-                    customerName: name,
+                    customerName: name || 'Valued Client',
                     customerGstin: gstin,
                     invoiceType: invType,
                     posState,
@@ -407,11 +408,12 @@ export async function parseGstFile(
                   });
                 } else {
                   if (!gstin) warnings.push('Vendor GSTIN was not found — ITC eligibility should be verified manually.');
+                  if (!name) warnings.push('Vendor name was not found — a generic placeholder was used.');
                   result.purchaseInvoices.push({
                     companyId,
                     invoiceNo: invNo || `PUR-REVIEW-${result.purchaseInvoices.length + 201}-${invIdx}`,
                     invoiceDate: invDate,
-                    vendorName: name,
+                    vendorName: name || 'Vendor Solutions',
                     vendorGstin: gstin,
                     posState,
                     hsnCode: '998311',

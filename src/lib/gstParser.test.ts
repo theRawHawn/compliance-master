@@ -335,6 +335,45 @@ test('export invoices derive exp_typ from actual IGST charged, and never fabrica
   assert.notEqual(zeroRated.inv[0].sbpcode, 'INBOM4');
 });
 
+test('a row with no customer/vendor name column is flagged WARNING, not silently marked VALID', async () => {
+  const csv = [
+    'Invoice No.,Invoice Date,GSTIN/UIN,Taxable Value',
+    'INV-1,15-03-2026,29AAACS1234F1Z5,50000',
+  ].join('\n');
+  const file = new File([csv], 'no_name_column.csv', { type: 'text/csv' });
+  const result = await parseGstFile(file, 'GSTR1', 'C1', '29');
+
+  assert.equal(result.salesInvoices.length, 1);
+  // Regression: this previously got a fabricated 'Enterprise Client / Vendor' name baked in
+  // before the warning check ran, so it always looked VALID even with no real name found.
+  assert.equal(result.salesInvoices[0].status, 'WARNING');
+  assert.ok(result.salesInvoices[0].validationMessage?.includes('name'));
+});
+
+test('a GST-portal JSON supplier with no cname/tradeName/legalName is flagged WARNING', async () => {
+  const jsonPayload = {
+    b2b: [
+      {
+        ctin: '29AAACS1234F1Z5',
+        // No cname/tradeName/legalName field at all.
+        inv: [
+          {
+            inum: 'INV-1',
+            idt: '15-03-2026',
+            itms: [{ itm_det: { txval: 50000, rt: 18, iamt: 0, camt: 4500, samt: 4500 } }],
+          },
+        ],
+      },
+    ],
+  };
+  const file = new File([JSON.stringify(jsonPayload)], 'portal_export.json', { type: 'application/json' });
+  const result = await parseGstFile(file, 'GSTR1', 'C1', '29');
+
+  assert.equal(result.salesInvoices.length, 1);
+  assert.equal(result.salesInvoices[0].status, 'WARNING');
+  assert.ok(result.salesInvoices[0].validationMessage?.toLowerCase().includes('name'));
+});
+
 test('generateGstr3bSummary netTaxPayable matches the late-fee engine net cash liability (Rule 88A consistency)', () => {
   const company = makeTestCompany();
   const sales: SalesInvoice[] = [

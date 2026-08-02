@@ -109,12 +109,30 @@ function parseDateValue(value: any): string {
   return '';
 }
 
+// Marks a likely column boundary in reconstructed PDF text (see reconstructPdfPageText). Chosen
+// to be a control character that can never appear in real invoice text and survives the '\s+'
+// whitespace normalization applied to every line later in the pipeline (a run of plain spaces
+// would not).
+export const PDF_COLUMN_BREAK_MARKER = '\x1f';
+// A whitespace-only PDF text item wider than this (in PDF points) reflects a genuine visual gap
+// between side-by-side columns, not a normal inter-word space (~3-4pt for typical body text).
+const COLUMN_GAP_WIDTH_THRESHOLD = 15;
+
 // pdfjs's text items are a flat stream with no inherent line structure; item.hasEOL marks the
 // end of a visual line in the source PDF. Without using it, an entire page of a real multi-line
-// invoice collapses into a single line of text when naively joined with spaces, which breaks
-// every piece of line-based extraction logic downstream (party name, invoice number, date).
-export function reconstructPdfPageText(items: Array<{ str: string; hasEOL?: boolean }>): string {
-  return items.map((item) => item.str + (item.hasEOL ? '\n' : ' ')).join('');
+// invoice collapses into a single line of text, which breaks every piece of line-based extraction
+// logic downstream (party name, invoice number, date). Separately, when two columns (e.g.
+// side-by-side 'Bill To' / 'Ship To' sections) sit on the same visual row, pdfjs represents the
+// gap between them as a whitespace-only item with an unusually large width; PDF_COLUMN_BREAK_MARKER
+// is inserted there so later extraction can recover just the first column's value.
+export function reconstructPdfPageText(items: Array<{ str: string; hasEOL?: boolean; width?: number }>): string {
+  return items
+    .map((item) => {
+      const isColumnGap = item.str.trim() === '' && (item.width || 0) > COLUMN_GAP_WIDTH_THRESHOLD;
+      const separator = item.hasEOL ? '\n' : isColumnGap ? PDF_COLUMN_BREAK_MARKER : ' ';
+      return item.str + separator;
+    })
+    .join('');
 }
 
 /**
@@ -830,12 +848,31 @@ const GSTIN_PATTERN = /\b\d{2}[A-Z]{5}\d{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}\b/i;
 const PARTY_NOISE_TERMS = /(gstin|invoice|voucher|doc\s*no|ref\s*no|dated?|amount|total\b|tax\b|hsn|qty|rate|address|particulars|seller|merchant|supplier)/i;
 const PARTY_REJECT_PATTERN = /\b\d{4,}\b|^\d+$|plot no|flat no|floor|city|state|postal|pin\s*code|^[a-z]{2}\d{4,}\b/i;
 
+// When two PDF columns (e.g. side-by-side 'Bill To' / 'Ship To' sections) sit on the same visual
+// row, this app's line-reconstruction necessarily joins them onto one line, typically leaving a
+// run of 2+ consecutive spaces at the column boundary (a genuine mid-name single space never
+// produces this). Truncating to the text before that gap recovers just the first column's value
+// instead of the whole merged string.
+function truncateAtColumnBoundary(candidate: string): string {
+  const markerIdx = candidate.indexOf(PDF_COLUMN_BREAK_MARKER);
+  if (markerIdx !== -1) return candidate.substring(0, markerIdx);
+  const match = candidate.match(/^(.*?)\s{2,}/);
+  return match ? match[1] : candidate;
+}
+
 function isPlausiblePartyName(candidate: string): boolean {
   const trimmed = candidate.trim();
   if (trimmed.length < 3) return false;
   if (GSTIN_PATTERN.test(trimmed)) return false;
   if (PARTY_NOISE_TERMS.test(trimmed)) return false;
   if (PARTY_REJECT_PATTERN.test(trimmed)) return false;
+  // A real party name never legitimately IS another section's label (e.g. a mis-parsed
+  // side-by-side 'Ship To' picked up while looking for the 'Bill To' value) -- this specifically
+  // catches that case, which would otherwise pass every other check above.
+  const lowerTrimmed = trimmed.toLowerCase();
+  if (PARTY_LABELS.some((label) => lowerTrimmed === label || lowerTrimmed.startsWith(`${label} `) || lowerTrimmed.startsWith(`${label}:`))) {
+    return false;
+  }
   return true;
 }
 
@@ -891,14 +928,14 @@ function extractPartyGstin(lines: string[], partyName: string): string {
   return '';
 }
 
-function extractPartyName(lines: string[], gstin: string): string {
+export function extractPartyName(lines: string[], gstin: string): string {
   for (let i = 0; i < lines.length; i += 1) {
     const lowerLine = lines[i].toLowerCase();
     const match = findPartyLabelMatch(lowerLine);
     if (!match) continue;
 
     // Try to extract from the same line first (e.g., "Bill To Miyuro" or "Party A/c Name : Acme Traders")
-    const afterLabel = cleanPartyName(lines[i].substring(match.index + match.label.length));
+    const afterLabel = truncateAtColumnBoundary(cleanPartyName(lines[i].substring(match.index + match.label.length)));
     if (isPlausiblePartyName(afterLabel)) {
       return cleanPartyName(afterLabel);
     }
@@ -906,7 +943,7 @@ function extractPartyName(lines: string[], gstin: string): string {
     // If not found on same line, look at next lines
     const context = lines.slice(i + 1, i + 8);
     for (const candidate of context) {
-      const trimmed = candidate.trim();
+      const trimmed = truncateAtColumnBoundary(candidate.trim());
       if (!trimmed || !isPlausiblePartyName(trimmed)) continue;
       return cleanPartyName(trimmed);
     }
@@ -916,8 +953,8 @@ function extractPartyName(lines: string[], gstin: string): string {
     for (let i = 0; i < lines.length; i += 1) {
       const line = lines[i];
       if (!line.includes(gstin)) continue;
-      const previous = lines[i - 1] || '';
-      const next = lines[i + 1] || '';
+      const previous = truncateAtColumnBoundary((lines[i - 1] || '').trim());
+      const next = truncateAtColumnBoundary((lines[i + 1] || '').trim());
       const preferred = isPlausiblePartyName(previous) ? previous : isPlausiblePartyName(next) ? next : '';
       if (preferred) {
         return cleanPartyName(preferred);
@@ -926,8 +963,9 @@ function extractPartyName(lines: string[], gstin: string): string {
   }
 
   for (const line of lines) {
-    if (isPlausiblePartyName(line)) {
-      return cleanPartyName(line);
+    const truncated = truncateAtColumnBoundary(line.trim());
+    if (isPlausiblePartyName(truncated)) {
+      return cleanPartyName(truncated);
     }
   }
 

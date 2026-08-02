@@ -323,6 +323,36 @@ test('PDF text reconstruction preserves line breaks instead of flattening a page
   assert.equal(lines[4].trim(), 'Shree Balaji Traders');
 });
 
+test('PDF text reconstruction inserts a column-break marker at wide side-by-side gaps, not normal inter-word spaces', async () => {
+  const { reconstructPdfPageText, PDF_COLUMN_BREAK_MARKER } = await import('./gstParser');
+  // Captured from a real two-column PDF invoice (Bill To / Ship To side-by-side) via pdfjs's
+  // getTextContent(): the gap between columns is a whitespace-only item with a large width
+  // (216.7pt here), vs a normal single space between words which would be only a few points.
+  const items = [
+    { str: 'Bill To', hasEOL: false, width: 33.3 },
+    { str: ' ', hasEOL: false, width: 216.7 },
+    { str: 'Ship To', hasEOL: true, width: 41.4 },
+  ];
+  const text = reconstructPdfPageText(items);
+  assert.ok(text.includes(PDF_COLUMN_BREAK_MARKER), 'expected a column-break marker at the wide gap');
+  const beforeMarker = text.split(PDF_COLUMN_BREAK_MARKER)[0];
+  assert.ok(beforeMarker.includes('Bill To'));
+  assert.ok(!beforeMarker.includes('Ship To'));
+});
+
+test('extractPartyName recovers just the first column when Bill To / Ship To sit side-by-side on one PDF line', async () => {
+  const { extractPartyName, PDF_COLUMN_BREAK_MARKER } = await import('./gstParser');
+  // Simulates the reconstructed lines from a real side-by-side Bill To / Ship To PDF layout.
+  const lines = [
+    `Bill To${PDF_COLUMN_BREAK_MARKER}Ship To`,
+    `Miyuro Enterprises${PDF_COLUMN_BREAK_MARKER}Miyuro Warehouse Unit 2`,
+    'GSTIN: 29ABCDE1234F1Z5',
+  ];
+  // Regression: this previously returned 'Ship To' (the wrong column's label picked up as the
+  // name) with no warning, since 'Ship To' alone passed every plausibility check.
+  assert.equal(extractPartyName(lines, ''), 'Miyuro Enterprises');
+});
+
 test('a genuinely parsed file is never flagged as sample data', async () => {
   const csv = [
     'Invoice No.,Invoice Date,Customer Name,GSTIN/UIN,Taxable Value',

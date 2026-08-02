@@ -4,6 +4,8 @@ import { Company, SalesInvoice, PurchaseInvoice, VendorPayment, Employee } from 
 import { validateGstin, validatePan, validateTan } from '../lib/validation';
 import { calculateTdsForPayment } from '../lib/tdsEngine';
 import { fetchGoogleSheetData, SAMPLE_GOOGLE_SHEETS } from '../lib/importParsers';
+import { resolvePosState, classifyGstr1InvoiceType, deriveMonthYear, isStructurallyValidGstin, parseDateValue } from '../lib/gstParser';
+import { todayIso } from '../lib/calculators/gstLateFeeCalculator';
 import {
   downloadSalesRegisterTemplate,
   downloadPurchaseRegisterTemplate,
@@ -156,8 +158,10 @@ export const DataImport: React.FC<DataImportProps> = ({
 
       if (selectedModule === 'SALES') {
         const invNo = String(getVal('invoiceNo') || `INV-${idx + 1}`);
-        const invDate = String(getVal('invoiceDate') || '2026-06-15');
-        const custName = String(getVal('customerName') || 'Customer');
+        const invDateRaw = getVal('invoiceDate');
+        const parsedInvDate = parseDateValue(invDateRaw);
+        const invDate = parsedInvDate || todayIso();
+        const custNameRaw = String(getVal('customerName') || '').trim();
         const cGstin = String(getVal('customerGstin') || '').trim().toUpperCase();
         const taxableVal = Number(getVal('taxableValue') || 0);
         const rate = Number(getVal('rate') || 18);
@@ -180,6 +184,18 @@ export const DataImport: React.FC<DataImportProps> = ({
           msg = 'Taxable value is zero or empty';
         }
 
+        if (!parsedInvDate) {
+          status = status === 'ERROR' ? status : 'WARNING';
+          msg = msg ? `${msg} Invoice date not found or unparseable — defaulted to today.` : 'Invoice date not found or unparseable — defaulted to today.';
+        }
+
+        if (!custNameRaw) {
+          status = status === 'ERROR' ? status : 'WARNING';
+          msg = msg ? `${msg} Customer name not found.` : 'Customer name not found.';
+        }
+        const custName = custNameRaw || 'Customer';
+
+        const gstinValid = isStructurallyValidGstin(cGstin);
         const isInter = posCode !== company.stateCode;
         const igst = isInter ? Number(((taxableVal * rate) / 100).toFixed(2)) : 0;
         const cgst = !isInter ? Number(((taxableVal * rate) / 200).toFixed(2)) : 0;
@@ -191,9 +207,9 @@ export const DataImport: React.FC<DataImportProps> = ({
           invoiceDate: invDate,
           customerName: custName,
           customerGstin: cGstin,
-          posState: posCode === company.stateCode ? company.state : 'Other State',
+          posState: resolvePosState(posCode),
           posCode: posCode,
-          invoiceType: cGstin ? 'B2B' : 'B2CS',
+          invoiceType: classifyGstr1InvoiceType(gstinValid, isInter, taxableVal),
           reverseCharge: 'N',
           hsnCode: String(getVal('hsnCode') || '998313'),
           description: 'Consulting Services',
@@ -205,14 +221,16 @@ export const DataImport: React.FC<DataImportProps> = ({
           cgst,
           sgst,
           cess: 0,
-          monthYear: '2026-06',
+          monthYear: deriveMonthYear(invDate) || deriveMonthYear(todayIso()),
           status,
           validationMessage: msg,
         });
       } else if (selectedModule === 'PURCHASE') {
         const invNo = String(getVal('invoiceNo') || `PUR-${idx + 1}`);
-        const invDate = String(getVal('invoiceDate') || '2026-06-10');
-        const vName = String(getVal('vendorName') || 'Vendor');
+        const invDateRaw = getVal('invoiceDate');
+        const parsedInvDate = parseDateValue(invDateRaw);
+        const invDate = parsedInvDate || todayIso();
+        const vNameRaw = String(getVal('vendorName') || '').trim();
         const vGstin = String(getVal('vendorGstin') || '').trim().toUpperCase();
         const taxableVal = Number(getVal('taxableValue') || 0);
         const rate = Number(getVal('rate') || 18);
@@ -229,6 +247,17 @@ export const DataImport: React.FC<DataImportProps> = ({
           }
         }
 
+        if (!parsedInvDate) {
+          status = status === 'ERROR' ? status : 'WARNING';
+          msg = msg ? `${msg} Invoice date not found or unparseable — defaulted to today.` : 'Invoice date not found or unparseable — defaulted to today.';
+        }
+
+        if (!vNameRaw) {
+          status = status === 'ERROR' ? status : 'WARNING';
+          msg = msg ? `${msg} Vendor name not found.` : 'Vendor name not found.';
+        }
+        const vName = vNameRaw || 'Vendor';
+
         const posCode = vGstin ? vGstin.substring(0, 2) : company.stateCode;
         const isInter = posCode !== company.stateCode;
         const igst = isInter ? Number(((taxableVal * rate) / 100).toFixed(2)) : 0;
@@ -241,14 +270,14 @@ export const DataImport: React.FC<DataImportProps> = ({
           invoiceDate: invDate,
           vendorName: vName,
           vendorGstin: vGstin,
-          posState: posCode === company.stateCode ? company.state : 'Other State',
+          posState: resolvePosState(posCode),
           taxableValue: taxableVal,
           igst,
           cgst,
           sgst,
           cess: 0,
-          itcEligible: 'Y',
-          monthYear: '2026-06',
+          itcEligible: isStructurallyValidGstin(vGstin) ? 'Y' : 'N',
+          monthYear: deriveMonthYear(invDate) || deriveMonthYear(todayIso()),
           status,
           validationMessage: msg,
         });

@@ -47,7 +47,7 @@ function formatExcelDate(value: number): string {
   return `${year}-${month}-${day}`;
 }
 
-function parseDateValue(value: any): string {
+export function parseDateValue(value: any): string {
   if (value instanceof Date) {
     return value.toISOString().split('T')[0];
   }
@@ -768,7 +768,7 @@ export function computeGstinCheckDigit(first14: string): string {
  * Validates a GSTIN's structural format (2-digit state code, 10-char PAN shape, entity code,
  * fixed 'Z', check character slot). This governs B2B/B2CS classification and ITC eligibility.
  */
-function isStructurallyValidGstin(gstin: string): boolean {
+export function isStructurallyValidGstin(gstin: string): boolean {
   const trimmed = gstin.trim().toUpperCase();
   return trimmed.length === 15 && GSTIN_PATTERN.test(trimmed);
 }
@@ -794,13 +794,13 @@ export function hasValidGstinChecksum(gstin: string): boolean {
 // ₹1,00,000 (previously ₹2,50,000, and previously not conditioned on inter-state at all).
 const B2CL_THRESHOLD = 100000;
 
-function classifyGstr1InvoiceType(gstinValid: boolean, isInterState: boolean, taxableValue: number): 'B2B' | 'B2CL' | 'B2CS' {
+export function classifyGstr1InvoiceType(gstinValid: boolean, isInterState: boolean, taxableValue: number): 'B2B' | 'B2CL' | 'B2CS' {
   if (gstinValid) return 'B2B';
   if (isInterState && taxableValue > B2CL_THRESHOLD) return 'B2CL';
   return 'B2CS';
 }
 
-function deriveMonthYear(invoiceDate: string): string {
+export function deriveMonthYear(invoiceDate: string): string {
   return /^\d{4}-\d{2}-\d{2}$/.test(invoiceDate) ? invoiceDate.slice(0, 7) : '';
 }
 

@@ -8,6 +8,8 @@ import {
   parseTallyXmlData,
   SAMPLE_GOOGLE_SHEETS,
 } from '../lib/importParsers';
+import { resolvePosState, classifyGstr1InvoiceType, deriveMonthYear, isStructurallyValidGstin, parseDateValue } from '../lib/gstParser';
+import { todayIso, previousMonthYear } from '../lib/calculators/gstLateFeeCalculator';
 import {
   X,
   Upload,
@@ -77,6 +79,11 @@ export const ImportModal: React.FC<ImportModalProps> = ({
   const [step, setStep] = useState<'SOURCE' | 'MAP' | 'PREVIEW'>('SOURCE');
   const [errorCount, setErrorCount] = useState(0);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  // True only when the staged records came from the simulated Tally/Zoho sync or a failed
+  // Google Sheets fetch (see generateFallbackDemoImport) -- never for genuinely parsed/fetched
+  // data. handleConfirmImport uses this to refuse importing fabricated records into a real
+  // company's live compliance data.
+  const [isSimulatedData, setIsSimulatedData] = useState(false);
 
   if (!isOpen) return null;
 
@@ -104,6 +111,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
   const initMappingFromData = (fileHeaders: string[], rowData: any[][]) => {
     setHeaders(fileHeaders);
     setParsedRows(rowData);
+    setIsSimulatedData(false);
 
     const initialMap: Record<string, string> = {};
     fileHeaders.forEach((fh) => {
@@ -138,11 +146,11 @@ export const ImportModal: React.FC<ImportModalProps> = ({
 
   // 2. Fetch Google Sheet Data
   const handleFetchGoogleSheet = async () => {
+    const isSampleRequest = !googleSheetUrl || googleSheetUrl === SAMPLE_GOOGLE_SHEETS[targetModule].url;
     try {
       setIsFetchingSheet(true);
       setStatusMessage('Connecting to Google Sheet API...');
-      
-      // Use standard sample or provided URL
+
       const urlToUse = googleSheetUrl || SAMPLE_GOOGLE_SHEETS[targetModule].url;
       const rows = await fetchGoogleSheetData(urlToUse);
 
@@ -155,9 +163,16 @@ export const ImportModal: React.FC<ImportModalProps> = ({
         throw new Error('Sheet returned no rows.');
       }
     } catch (err: any) {
-      // Fallback demo dataset if offline or CORS restriction on sample
-      setStatusMessage('Using direct Google Sheet proxy dataset for preview...');
-      generateFallbackDemoImport();
+      if (isSampleRequest) {
+        // Explicitly requested the sample sheet and the live fetch didn't work -- fall back to
+        // the clearly-marked simulated dataset rather than failing outright.
+        setStatusMessage('Could not reach the live sample sheet — showing a simulated preview dataset instead.');
+        generateFallbackDemoImport();
+      } else {
+        // The user provided their own real sheet URL and it genuinely failed -- show that
+        // honestly instead of silently substituting fabricated data as if it were their sheet.
+        setStatusMessage('Could not fetch that Google Sheet. Please check the URL and sharing permissions, then try again.');
+      }
     } finally {
       setIsFetchingSheet(false);
     }
@@ -199,6 +214,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
     setStatusMessage('Connecting to local Tally Prime ODBC/XML Server (Port 9000)...');
     setTimeout(() => {
       setIsConnectingTally(false);
+      setStatusMessage('Live Tally connection is not available in this environment — showing a simulated preview dataset instead.');
       generateFallbackDemoImport('TALLY');
     }, 1200);
   };
@@ -209,22 +225,26 @@ export const ImportModal: React.FC<ImportModalProps> = ({
     setStatusMessage('Connecting to Zoho Books API v3...');
     setTimeout(() => {
       setIsSyncingZoho(false);
+      setStatusMessage('Live Zoho Books connection is not available in this environment — showing a simulated preview dataset instead.');
       generateFallbackDemoImport('ZOHO');
     }, 1200);
   };
 
-  // Fallback / Instant Direct Sync Generator for ERPs & Sample Sheets
+  // Fallback / Instant Simulated Preview Generator for ERPs & Sample Sheets. IMPORTANT: this data
+  // is entirely fabricated (no real Tally/Zoho/ERP connection exists in this environment) and
+  // must never be imported into a real company's live compliance records -- see isSimulatedData.
   const generateFallbackDemoImport = (sourceType: 'GOOGLE' | 'TALLY' | 'ZOHO' | 'BUSY' = 'GOOGLE') => {
     let mockResults: any[] = [];
-    const now = '2026-06-18';
+    const demoMonthYear = previousMonthYear();
+    const demoDate = (day: number) => `${demoMonthYear}-${String(day).padStart(2, '0')}`;
 
     if (targetModule === 'SALES') {
       mockResults = [
         {
           companyId: company.id,
           invoiceNo: `${sourceType.substring(0, 3)}-SAL-001`,
-          invoiceDate: '2026-06-05',
-          customerName: 'Reliance Retail Ventures Ltd',
+          invoiceDate: demoDate(5),
+          customerName: 'Horizon Retail Ventures Pvt Ltd (Simulated)',
           customerGstin: '27AAAAA0000A1Z5',
           posState: company.state,
           posCode: company.stateCode,
@@ -240,15 +260,15 @@ export const ImportModal: React.FC<ImportModalProps> = ({
           cgst: 13500,
           sgst: 13500,
           cess: 0,
-          monthYear: '2026-06',
+          monthYear: demoMonthYear,
           status: 'VALID',
-          validationMessage: `Synced via ${sourceType}`,
+          validationMessage: `Simulated preview (${sourceType} live sync unavailable)`,
         },
         {
           companyId: company.id,
           invoiceNo: `${sourceType.substring(0, 3)}-SAL-002`,
-          invoiceDate: '2026-06-12',
-          customerName: 'Tata Consultancy Services Ltd',
+          invoiceDate: demoDate(12),
+          customerName: 'Meridian Consultancy Services Ltd (Simulated)',
           customerGstin: '27AAACT2727Q1ZW',
           posState: 'Maharashtra',
           posCode: '27',
@@ -264,9 +284,9 @@ export const ImportModal: React.FC<ImportModalProps> = ({
           cgst: 25200,
           sgst: 25200,
           cess: 0,
-          monthYear: '2026-06',
+          monthYear: demoMonthYear,
           status: 'VALID',
-          validationMessage: `Synced via ${sourceType}`,
+          validationMessage: `Simulated preview (${sourceType} live sync unavailable)`,
         },
       ];
     } else if (targetModule === 'PURCHASE') {
@@ -274,8 +294,8 @@ export const ImportModal: React.FC<ImportModalProps> = ({
         {
           companyId: company.id,
           invoiceNo: `${sourceType.substring(0, 3)}-PUR-101`,
-          invoiceDate: '2026-06-10',
-          vendorName: 'Amazon Web Services India Pvt Ltd',
+          invoiceDate: demoDate(10),
+          vendorName: 'CloudNova Web Services India Pvt Ltd (Simulated)',
           vendorGstin: '27AABCA1234F1Z1',
           posState: company.state,
           taxableValue: 45000,
@@ -284,9 +304,9 @@ export const ImportModal: React.FC<ImportModalProps> = ({
           sgst: 4050,
           cess: 0,
           itcEligible: 'Y',
-          monthYear: '2026-06',
+          monthYear: demoMonthYear,
           status: 'VALID',
-          validationMessage: `Imported via ${sourceType}`,
+          validationMessage: `Simulated preview (${sourceType} live sync unavailable)`,
         },
       ];
     } else if (targetModule === 'VENDOR_TDS') {
@@ -299,8 +319,8 @@ export const ImportModal: React.FC<ImportModalProps> = ({
         {
           companyId: company.id,
           paymentNo: `${sourceType.substring(0, 3)}-PAY-201`,
-          paymentDate: '2026-06-15',
-          vendorName: 'BlueDart Logistics India',
+          paymentDate: demoDate(15),
+          vendorName: 'Swiftline Logistics India (Simulated)',
           vendorPan: 'AAACB1234C',
           sectionCode: '194C',
           natureOfPayment: 'Contractor Freight',
@@ -311,11 +331,11 @@ export const ImportModal: React.FC<ImportModalProps> = ({
           tdsDeposited: calc.tdsAmount,
           challanNo: 'CHL99812',
           bsrCode: '0510001',
-          challanDate: '2026-06-25',
+          challanDate: demoDate(25),
           quarter: 'Q1',
           financialYear: company.financialYear,
           status: 'VALID',
-          validationMessage: `Synced from ${sourceType}`,
+          validationMessage: `Simulated preview (${sourceType} live sync unavailable)`,
         },
       ];
     } else if (targetModule === 'EMPLOYEES') {
@@ -323,7 +343,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
         {
           companyId: company.id,
           empId: `${sourceType.substring(0, 3)}-E901`,
-          name: 'Siddharth Varma',
+          name: 'Sample Employee (Simulated)',
           pan: 'ABCDE5678F',
           uan: '100900112233',
           pfMemberId: `${company.pfCode || 'MH/BAN/0012345/000'}/E901`,
@@ -338,13 +358,14 @@ export const ImportModal: React.FC<ImportModalProps> = ({
           hra: 18000,
           specialAllowance: 10000,
           status: 'VALID',
-          validationMessage: `Imported via ${sourceType}`,
+          validationMessage: `Simulated preview (${sourceType} live sync unavailable)`,
         },
       ];
     }
 
     setValidatedData(mockResults);
     setErrorCount(0);
+    setIsSimulatedData(true);
     setStep('PREVIEW');
   };
 
@@ -352,6 +373,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
   const handleValidateMapping = () => {
     const results: any[] = [];
     let errs = 0;
+    setIsSimulatedData(false);
 
     parsedRows.forEach((row, idx) => {
       const getVal = (fieldKey: string) => {
@@ -363,10 +385,13 @@ export const ImportModal: React.FC<ImportModalProps> = ({
 
       if (targetModule === 'SALES') {
         const invNo = String(getVal('invoiceNo') || `INV-${idx + 1}`);
-        const invDate = String(getVal('invoiceDate') || '2026-06-15');
-        const custName = String(getVal('customerName') || 'Client');
+        const invDateRaw = getVal('invoiceDate');
+        const parsedInvDate = parseDateValue(invDateRaw);
+        const invDate = parsedInvDate || todayIso();
+        const custNameRaw = String(getVal('customerName') || '').trim();
         const cGstin = String(getVal('customerGstin') || '').trim().toUpperCase();
-        const taxableVal = Number(getVal('taxableValue') || 10000);
+        const taxableValRaw = getVal('taxableValue');
+        const taxableVal = Number(taxableValRaw || 0);
         const rate = Number(getVal('rate') || 18);
 
         let status: 'VALID' | 'WARNING' | 'ERROR' = 'VALID';
@@ -381,7 +406,25 @@ export const ImportModal: React.FC<ImportModalProps> = ({
           }
         }
 
-        const isInter = cGstin && !cGstin.startsWith(company.stateCode);
+        if (!parsedInvDate) {
+          status = status === 'ERROR' ? status : 'WARNING';
+          msg = msg ? `${msg} Invoice date not found or unparseable — defaulted to today.` : 'Invoice date not found or unparseable — defaulted to today.';
+        }
+
+        if (!custNameRaw) {
+          status = status === 'ERROR' ? status : 'WARNING';
+          msg = msg ? `${msg} Customer name not found.` : 'Customer name not found.';
+        }
+        const custName = custNameRaw || 'Client';
+
+        if (!taxableValRaw) {
+          status = status === 'ERROR' ? status : 'WARNING';
+          msg = msg ? `${msg} Taxable value not found.` : 'Taxable value not found.';
+        }
+
+        const posCode = String(getVal('posCode') || (cGstin ? cGstin.substring(0, 2) : company.stateCode));
+        const gstinValid = isStructurallyValidGstin(cGstin);
+        const isInter = posCode !== company.stateCode;
         const igst = isInter ? Number(((taxableVal * rate) / 100).toFixed(2)) : 0;
         const cgst = !isInter ? Number(((taxableVal * rate) / 200).toFixed(2)) : 0;
         const sgst = !isInter ? Number(((taxableVal * rate) / 200).toFixed(2)) : 0;
@@ -392,9 +435,9 @@ export const ImportModal: React.FC<ImportModalProps> = ({
           invoiceDate: invDate,
           customerName: custName,
           customerGstin: cGstin,
-          posState: isInter ? 'Other State' : company.state,
-          posCode: cGstin ? cGstin.substring(0, 2) : company.stateCode,
-          invoiceType: cGstin ? 'B2B' : 'B2CS',
+          posState: resolvePosState(posCode),
+          posCode: posCode,
+          invoiceType: classifyGstr1InvoiceType(gstinValid, isInter, taxableVal),
           reverseCharge: 'N',
           hsnCode: String(getVal('hsnCode') || '998313'),
           description: 'Services',
@@ -406,20 +449,48 @@ export const ImportModal: React.FC<ImportModalProps> = ({
           cgst,
           sgst,
           cess: 0,
-          monthYear: '2026-06',
+          monthYear: deriveMonthYear(invDate) || deriveMonthYear(todayIso()),
           status,
           validationMessage: msg || 'Valid Sales Voucher',
         });
       } else if (targetModule === 'PURCHASE') {
         const invNo = String(getVal('invoiceNo') || `PUR-${idx + 1}`);
-        const invDate = String(getVal('invoiceDate') || '2026-06-10');
-        const vName = String(getVal('vendorName') || 'Vendor');
+        const invDateRaw = getVal('invoiceDate');
+        const parsedInvDate = parseDateValue(invDateRaw);
+        const invDate = parsedInvDate || todayIso();
+        const vNameRaw = String(getVal('vendorName') || '').trim();
         const vGstin = String(getVal('vendorGstin') || '').trim().toUpperCase();
-        const taxableVal = Number(getVal('taxableValue') || 15000);
+        const taxableValRaw = getVal('taxableValue');
+        const taxableVal = Number(taxableValRaw || 0);
         const rate = Number(getVal('rate') || 18);
 
         let status: 'VALID' | 'WARNING' | 'ERROR' = 'VALID';
         let msg = '';
+
+        if (vGstin) {
+          const gVal = validateGstin(vGstin);
+          if (!gVal.valid) {
+            status = 'ERROR';
+            msg = gVal.message || 'Invalid Vendor GSTIN';
+            errs++;
+          }
+        }
+
+        if (!parsedInvDate) {
+          status = status === 'ERROR' ? status : 'WARNING';
+          msg = msg ? `${msg} Invoice date not found or unparseable — defaulted to today.` : 'Invoice date not found or unparseable — defaulted to today.';
+        }
+
+        if (!vNameRaw) {
+          status = status === 'ERROR' ? status : 'WARNING';
+          msg = msg ? `${msg} Vendor name not found.` : 'Vendor name not found.';
+        }
+        const vName = vNameRaw || 'Vendor';
+
+        if (!taxableValRaw) {
+          status = status === 'ERROR' ? status : 'WARNING';
+          msg = msg ? `${msg} Taxable value not found.` : 'Taxable value not found.';
+        }
 
         const posCode = vGstin ? vGstin.substring(0, 2) : company.stateCode;
         const isInter = posCode !== company.stateCode;
@@ -433,14 +504,14 @@ export const ImportModal: React.FC<ImportModalProps> = ({
           invoiceDate: invDate,
           vendorName: vName,
           vendorGstin: vGstin,
-          posState: isInter ? 'Other State' : company.state,
+          posState: resolvePosState(posCode),
           taxableValue: taxableVal,
           igst,
           cgst,
           sgst,
           cess: 0,
-          itcEligible: 'Y',
-          monthYear: '2026-06',
+          itcEligible: isStructurallyValidGstin(vGstin) ? 'Y' : 'N',
+          monthYear: deriveMonthYear(invDate) || deriveMonthYear(todayIso()),
           status,
           validationMessage: msg || 'Valid Purchase Record',
         });
@@ -512,6 +583,10 @@ export const ImportModal: React.FC<ImportModalProps> = ({
 
   // 7. Final Import Action
   const handleConfirmImport = () => {
+    if (isSimulatedData) {
+      setStatusMessage('This is simulated preview data and cannot be imported. Please upload a real file or connect a genuine data source.');
+      return;
+    }
     if (targetModule === 'SALES' && onImportSales) {
       onImportSales(validatedData);
     } else if (targetModule === 'PURCHASE' && onImportPurchases) {
@@ -885,9 +960,21 @@ export const ImportModal: React.FC<ImportModalProps> = ({
           {/* STEP 3: PREVIEW & IMPORT */}
           {step === 'PREVIEW' && (
             <div className="space-y-6">
+              {isSimulatedData && (
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs font-semibold text-amber-800 flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                  <span>
+                    This is simulated preview data — no live Tally/Zoho/ERP connection exists in this
+                    environment. It cannot be imported into {company.legalName}'s real records. Upload
+                    an actual file or connect a genuine data source to import real data.
+                  </span>
+                </div>
+              )}
               <div className="flex justify-between items-center pb-3 border-b border-slate-200">
                 <div>
-                  <h3 className="text-sm font-bold text-slate-900">Validation & Preview ({validatedData.length} Records)</h3>
+                  <h3 className="text-sm font-bold text-slate-900">
+                    {isSimulatedData ? 'Simulated Preview' : 'Validation & Preview'} ({validatedData.length} Records)
+                  </h3>
                   <p className="text-xs text-slate-500">
                     {errorCount > 0 ? `${errorCount} format issues flagged` : 'All records validated for Indian Statutory Compliance'}
                   </p>
@@ -901,10 +988,15 @@ export const ImportModal: React.FC<ImportModalProps> = ({
                   </button>
                   <button
                     onClick={handleConfirmImport}
-                    className="bg-[#25D366] hover:bg-[#20bd5a] text-slate-950 font-black px-5 py-2 rounded-xl text-xs shadow-md transition flex items-center gap-1.5"
+                    disabled={isSimulatedData}
+                    className={`font-black px-5 py-2 rounded-xl text-xs shadow-md transition flex items-center gap-1.5 ${
+                      isSimulatedData
+                        ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                        : 'bg-[#25D366] hover:bg-[#20bd5a] text-slate-950'
+                    }`}
                   >
                     <CheckCircle2 className="w-4 h-4" />
-                    <span>Confirm & Import ({validatedData.length})</span>
+                    <span>{isSimulatedData ? 'Simulated (Import Disabled)' : `Confirm & Import (${validatedData.length})`}</span>
                   </button>
                 </div>
               </div>
@@ -937,7 +1029,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
                           )}
                         </td>
                         <td className="px-3 py-2 font-bold">{r.invoiceNo || r.paymentNo || r.empId}</td>
-                        <td className="px-3 py-2">{r.invoiceDate || r.paymentDate || '2026-06-15'}</td>
+                        <td className="px-3 py-2">{r.invoiceDate || r.paymentDate || '—'}</td>
                         <td className="px-3 py-2 font-sans truncate max-w-[150px]">
                           {r.customerName || r.vendorName || r.name}
                         </td>

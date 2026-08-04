@@ -506,7 +506,10 @@ export function generateGstr3bSummary(
   const sales = allSales.filter((s) => s.monthYear === monthYear);
   const purchases = allPurchases.filter((p) => p.monthYear === monthYear);
 
-  // 3.1 Outward supplies summary
+  // 3.1 Outward supplies summary. Reverse-charge sales are excluded from the supplier's own tax
+  // liability: under RCM, the recipient self-assesses and pays that tax directly to the
+  // government, so including it here would double-count/misattribute the liability. The taxable
+  // value is still counted (the underlying supply still occurred), only the tax columns exclude it.
   let taxableOutward = 0;
   let igstOutward = 0;
   let cgstOutward = 0;
@@ -515,20 +518,34 @@ export function generateGstr3bSummary(
 
   sales.forEach((s) => {
     taxableOutward += s.taxableValue;
-    igstOutward += s.igst;
-    cgstOutward += s.cgst;
-    sgstOutward += s.sgst;
-    cessOutward += s.cess || 0;
+    if (s.reverseCharge !== 'Y') {
+      igstOutward += s.igst;
+      cgstOutward += s.cgst;
+      sgstOutward += s.sgst;
+      cessOutward += s.cess || 0;
+    }
   });
 
-  // 4. Eligible ITC summary
+  // 3.1(d) Inward supplies liable to reverse charge, and 4. Eligible ITC summary.
   let taxableInward = 0;
   let igstItc = 0;
   let cgstItc = 0;
   let sgstItc = 0;
   let cessItc = 0;
+  let rcmTaxableInward = 0;
+  let rcmIgst = 0;
+  let rcmCgst = 0;
+  let rcmSgst = 0;
+  let rcmCess = 0;
 
   purchases.forEach((p) => {
+    if (p.reverseCharge === 'Y') {
+      rcmTaxableInward += p.taxableValue;
+      rcmIgst += p.igst;
+      rcmCgst += p.cgst;
+      rcmSgst += p.sgst;
+      rcmCess += p.cess || 0;
+    }
     if (p.itcEligible === 'Y') {
       taxableInward += p.taxableValue;
       igstItc += p.igst;
@@ -537,6 +554,8 @@ export function generateGstr3bSummary(
       cessItc += p.cess || 0;
     }
   });
+
+  const rcmCashRequired = Number((rcmIgst + rcmCgst + rcmSgst + rcmCess).toFixed(2));
 
   const period = formatGstPeriod(monthYear);
 
@@ -571,6 +590,16 @@ export function generateGstr3bSummary(
         stateTax: Number(sgstOutward.toFixed(2)),
         cess: Number(cessOutward.toFixed(2)),
       },
+      // Table 3.1(d): Inward supplies liable to reverse charge. Must be paid via cash ledger
+      // only -- existing ITC cannot reduce this, regardless of credit balance (Section 16 /
+      // Rule 85). See rcmCashRequired below for the mandatory cash impact.
+      d_inwardSuppliesRCM: {
+        totalTaxableValue: Number(rcmTaxableInward.toFixed(2)),
+        integratedTax: Number(rcmIgst.toFixed(2)),
+        centralTax: Number(rcmCgst.toFixed(2)),
+        stateTax: Number(rcmSgst.toFixed(2)),
+        cess: Number(rcmCess.toFixed(2)),
+      },
     },
     table4_EligibleITC: {
       a5_allOtherITC: {
@@ -586,6 +615,12 @@ export function generateGstr3bSummary(
       stateTax: Number(netTaxPayable.sgst.toFixed(2)),
       cess: Number(netTaxPayable.cess.toFixed(2)),
     },
+    // Mandatory cash-only RCM liability (Table 3.1(d)) -- always payable in full regardless of
+    // ITC balance, so it's kept separate from netTaxPayable rather than merged into it.
+    rcmCashRequired,
+    // Total cash a business actually needs to have available to file: the regular net liability
+    // (after Rule 88A ITC set-off) plus the mandatory RCM cash requirement on top of it.
+    totalCashRequired: Number((netTaxPayable.igst + netTaxPayable.cgst + netTaxPayable.sgst + netTaxPayable.cess + rcmCashRequired).toFixed(2)),
     table51_InterestAndLateFee: {
       daysDelayedGstr3b: lateFeeEngine.daysDelayedGstr3b,
       daysDelayedGstr1: lateFeeEngine.daysDelayedGstr1,

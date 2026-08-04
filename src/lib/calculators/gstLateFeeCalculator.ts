@@ -47,6 +47,16 @@ export interface GstLateFeeInterestResult {
     cess: number;
     total: number;
   };
+  /** Mandatory cash-only RCM liability (GSTR-3B Table 3.1(d)), already included in
+   *  netCashLiability above but broken out separately since it behaves differently from regular
+   *  liability: it can never be reduced by existing ITC, regardless of balance. */
+  reverseChargeCashRequired: {
+    igst: number;
+    cgst: number;
+    sgst: number;
+    cess: number;
+    total: number;
+  };
   gstr1LateFee: {
     cgst: number;
     sgst: number;
@@ -233,8 +243,12 @@ export function calculateGstLateFeeAndInterest(
   const daysDelayedGstr3b = calculateDaysBetween(gstr3bDueDate, actualFilingDate);
 
   // Outward Tax Summary
+  // Outward Tax Summary. Reverse-charge sales are excluded: under RCM the recipient
+  // self-assesses and pays that tax directly, so including it here would double-count/
+  // misattribute the supplier's own liability.
   let outIgst = 0, outCgst = 0, outSgst = 0, outCess = 0;
   periodSales.forEach((s) => {
+    if (s.reverseCharge === 'Y') return;
     outIgst += s.igst;
     outCgst += s.cgst;
     outSgst += s.sgst;
@@ -242,8 +256,12 @@ export function calculateGstLateFeeAndInterest(
   });
   const totalOutwardTax = outIgst + outCgst + outSgst + outCess;
 
-  // ITC Summary
+  // ITC Summary, and RCM inward (Table 3.1(d)) mandatory cash-only liability. Per Section 16 /
+  // Rule 85, RCM liability must be paid via cash ledger only -- existing ITC cannot reduce it
+  // regardless of balance -- so it is tracked separately and added on top of the Rule 88A net
+  // cash liability rather than merged into the set-off computation.
   let itcIgst = 0, itcCgst = 0, itcSgst = 0, itcCess = 0;
+  let rcmIgst = 0, rcmCgst = 0, rcmSgst = 0, rcmCess = 0;
   periodPurchases.forEach((p) => {
     if (p.itcEligible === 'Y') {
       itcIgst += p.igst;
@@ -251,23 +269,38 @@ export function calculateGstLateFeeAndInterest(
       itcSgst += p.sgst;
       itcCess += p.cess || 0;
     }
+    if (p.reverseCharge === 'Y') {
+      rcmIgst += p.igst;
+      rcmCgst += p.cgst;
+      rcmSgst += p.sgst;
+      rcmCess += p.cess || 0;
+    }
   });
+  const reverseChargeCashRequired = {
+    igst: rcmIgst,
+    cgst: rcmCgst,
+    sgst: rcmSgst,
+    cess: rcmCess,
+    total: rcmIgst + rcmCgst + rcmSgst + rcmCess,
+  };
 
   // Net Cash Liability after Rule 88A cross-utilization of ITC (IGST credit first against IGST,
   // then CGST, then SGST; CGST credit only additionally against IGST; SGST credit only
   // additionally against IGST) — not simple independent per-head netting, which would overstate
   // liability (and therefore interest) whenever IGST credit could offset CGST/SGST output tax.
-  const netLiability = computeItcSetoff(
+  // The mandatory RCM cash requirement is added on top afterward, since it cannot be reduced by
+  // this set-off no matter how large the ITC balance is.
+  const regularNetLiability = computeItcSetoff(
     { igst: outIgst, cgst: outCgst, sgst: outSgst, cess: outCess },
     { igst: itcIgst, cgst: itcCgst, sgst: itcSgst, cess: itcCess }
   );
-  const netIgst = netLiability.igst;
-  const netCgst = netLiability.cgst;
-  const netSgst = netLiability.sgst;
-  const netCess = netLiability.cess;
+  const netIgst = regularNetLiability.igst + rcmIgst;
+  const netCgst = regularNetLiability.cgst + rcmCgst;
+  const netSgst = regularNetLiability.sgst + rcmSgst;
+  const netCess = regularNetLiability.cess + rcmCess;
   const netTotalCash = netIgst + netCgst + netSgst + netCess;
 
-  const isNilReturn = totalOutwardTax === 0;
+  const isNilReturn = totalOutwardTax === 0 && reverseChargeCashRequired.total === 0;
 
   // -------------------------------------------------------------
   // 1. CGST Act Section 47 Late Fee Calculation
@@ -401,6 +434,7 @@ export function calculateGstLateFeeAndInterest(
       cess: netCess,
       total: netTotalCash,
     },
+    reverseChargeCashRequired,
     gstr1LateFee,
     gstr3bLateFee,
     interestSection50,

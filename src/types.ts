@@ -117,6 +117,12 @@ export interface PurchaseInvoice {
   sgst: number;
   cess: number;
   itcEligible: 'Y' | 'N';
+  /** 'Y' if this purchase is liable to reverse charge (GSTR-3B Table 3.1(d)) -- e.g. legal
+   *  services from an advocate, GTA freight, security services from a non-body-corporate,
+   *  sponsorship, import of services. RCM liability must be paid via cash ledger only and
+   *  cannot be offset by existing ITC (Section 16 / Rule 85), so this is tracked and computed
+   *  separately from regular ITC eligibility. Defaults to 'N' when absent. */
+  reverseCharge?: 'Y' | 'N';
   hsnCode?: string;
   monthYear: string;
   status: 'VALID' | 'WARNING' | 'ERROR';

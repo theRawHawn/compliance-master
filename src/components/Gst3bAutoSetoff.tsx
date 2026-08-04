@@ -120,7 +120,7 @@ export const Gst3bAutoSetoff: React.FC<Gst3bAutoSetoffProps> = ({
   const setoff_cess = Math.min(itcCess, outCess);
   const remOutCess = outCess - setoff_cess;
 
-  // Net Tax Liability after ITC Set-Off
+  // Net Tax Liability after ITC Set-Off (regular portion only)
   const netLiability = {
     igst: remOutIgst,
     cgst: remOutCgst,
@@ -142,9 +142,24 @@ export const Gst3bAutoSetoff: React.FC<Gst3bAutoSetoffProps> = ({
 
   const totalTaxCashChallan = finalPayableIgst + finalPayableCgst + finalPayableSgst + finalPayableCess;
 
+  // Mandatory cash-only RCM liability (Table 3.1(d)) -- cannot be reduced by ITC/credit ledger
+  // regardless of balance, but genuinely available cash ledger balance can still be used to pay
+  // it. Applied after the regular allocation above so the same cash ledger rupee is never
+  // counted toward both.
+  const rcmCash = lateFeeResult.reverseChargeCashRequired;
+  const rcmCashUsedIgst = Math.min(Math.max(0, cashLedger.igst - cashUsedIgst), rcmCash.igst);
+  const rcmCashUsedCgst = Math.min(Math.max(0, cashLedger.cgst - cashUsedCgst), rcmCash.cgst);
+  const rcmCashUsedSgst = Math.min(Math.max(0, cashLedger.sgst - cashUsedSgst), rcmCash.sgst);
+  const rcmCashUsedCess = Math.min(Math.max(0, cashLedger.cess - cashUsedCess), rcmCash.cess);
+  const rcmFinalPayableIgst = Math.max(0, rcmCash.igst - rcmCashUsedIgst);
+  const rcmFinalPayableCgst = Math.max(0, rcmCash.cgst - rcmCashUsedCgst);
+  const rcmFinalPayableSgst = Math.max(0, rcmCash.sgst - rcmCashUsedSgst);
+  const rcmFinalPayableCess = Math.max(0, rcmCash.cess - rcmCashUsedCess);
+  const rcmTotalTaxCashChallan = rcmFinalPayableIgst + rcmFinalPayableCgst + rcmFinalPayableSgst + rcmFinalPayableCess;
+
   // Total Cash Requirement including Late Fees and Interest
   const totalLateFeesAndInterest = lateFeeResult.totalPenaltiesAndInterest;
-  const grandTotalCashChallan = totalTaxCashChallan + totalLateFeesAndInterest;
+  const grandTotalCashChallan = totalTaxCashChallan + rcmTotalTaxCashChallan + totalLateFeesAndInterest;
 
   return (
     <div className="space-y-6">
@@ -301,14 +316,18 @@ export const Gst3bAutoSetoff: React.FC<Gst3bAutoSetoffProps> = ({
             ₹{grandTotalCashChallan.toLocaleString('en-IN')}
           </p>
           <p className="text-xs text-slate-300 mt-1">
-            Net Tax Payable (₹{totalTaxCashChallan.toLocaleString('en-IN')}) + Late Fee (₹{lateFeeResult.gstr3bLateFee.total.toLocaleString('en-IN')}) + Sec 50(1) Interest (₹{lateFeeResult.interestSection50.total.toLocaleString('en-IN')})
+            Net Regular Tax (₹{totalTaxCashChallan.toLocaleString('en-IN')}) + RCM Cash (₹{rcmTotalTaxCashChallan.toLocaleString('en-IN')}) + Late Fee (₹{lateFeeResult.gstr3bLateFee.total.toLocaleString('en-IN')}) + Sec 50(1) Interest (₹{lateFeeResult.interestSection50.total.toLocaleString('en-IN')})
           </p>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs w-full lg:w-auto">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs w-full lg:w-auto">
           <div className="bg-white/10 p-3 rounded-xl border border-white/10 text-center">
-            <span className="text-[10px] text-slate-300 uppercase font-bold">Net Cash Tax</span>
+            <span className="text-[10px] text-slate-300 uppercase font-bold">Net Regular Tax</span>
             <p className="text-lg font-black text-white font-mono mt-0.5">₹{totalTaxCashChallan.toLocaleString('en-IN')}</p>
+          </div>
+          <div className="bg-white/10 p-3 rounded-xl border border-white/10 text-center">
+            <span className="text-[10px] text-sky-300 uppercase font-bold">RCM Cash Only</span>
+            <p className="text-lg font-black text-sky-300 font-mono mt-0.5">₹{rcmTotalTaxCashChallan.toLocaleString('en-IN')}</p>
           </div>
           <div className="bg-white/10 p-3 rounded-xl border border-white/10 text-center">
             <span className="text-[10px] text-amber-300 uppercase font-bold">Sec 47 Late Fee</span>
@@ -566,15 +585,26 @@ export const Gst3bAutoSetoff: React.FC<Gst3bAutoSetoffProps> = ({
                 <td className="py-3 px-4 text-right text-purple-700 font-bold">-₹{cashUsedCess.toLocaleString('en-IN')}</td>
                 <td className="py-3 px-4 text-right font-black text-purple-950 font-sans">₹{finalPayableCess.toLocaleString('en-IN')}</td>
               </tr>
+              <tr className="hover:bg-sky-50 bg-sky-50/40">
+                <td className="py-3 px-4 font-sans font-bold text-sky-900">
+                  Reverse Charge (RCM) — Cash Only
+                  <span className="block text-[10px] font-normal text-sky-700">Table 3.1(d) — cannot be reduced by ITC, regardless of balance</span>
+                </td>
+                <td className="py-3 px-4 text-right">₹{rcmCash.total.toLocaleString('en-IN')}</td>
+                <td className="py-3 px-4 text-right text-slate-400 font-bold">N/A</td>
+                <td className="py-3 px-4 text-right font-bold">₹{rcmCash.total.toLocaleString('en-IN')}</td>
+                <td className="py-3 px-4 text-right text-purple-700 font-bold">-₹{(rcmCashUsedIgst + rcmCashUsedCgst + rcmCashUsedSgst + rcmCashUsedCess).toLocaleString('en-IN')}</td>
+                <td className="py-3 px-4 text-right font-black text-purple-950 font-sans">₹{rcmTotalTaxCashChallan.toLocaleString('en-IN')}</td>
+              </tr>
             </tbody>
             <tfoot>
               <tr className="bg-slate-900 text-white font-black text-sm">
                 <td className="py-3 px-4 font-sans">TOTAL CASH PAYABLE</td>
-                <td className="py-3 px-4 text-right">₹{(outIgst + outCgst + outSgst + outCess).toLocaleString('en-IN')}</td>
+                <td className="py-3 px-4 text-right">₹{(outIgst + outCgst + outSgst + outCess + rcmCash.total).toLocaleString('en-IN')}</td>
                 <td className="py-3 px-4 text-right text-emerald-400">-₹{(setoff_igst_against_igst + setoff_igst_against_cgst + setoff_igst_against_sgst + setoff_cgst_against_cgst + setoff_sgst_against_sgst + setoff_cess).toLocaleString('en-IN')}</td>
-                <td className="py-3 px-4 text-right">₹{(remOutIgst + remOutCgst + remOutSgst + remOutCess).toLocaleString('en-IN')}</td>
-                <td className="py-3 px-4 text-right text-purple-300">-₹{(cashUsedIgst + cashUsedCgst + cashUsedSgst + cashUsedCess).toLocaleString('en-IN')}</td>
-                <td className="py-3 px-4 text-right text-amber-400 font-mono text-base">₹{totalTaxCashChallan.toLocaleString('en-IN')}</td>
+                <td className="py-3 px-4 text-right">₹{(remOutIgst + remOutCgst + remOutSgst + remOutCess + rcmCash.total).toLocaleString('en-IN')}</td>
+                <td className="py-3 px-4 text-right text-purple-300">-₹{(cashUsedIgst + cashUsedCgst + cashUsedSgst + cashUsedCess + rcmCashUsedIgst + rcmCashUsedCgst + rcmCashUsedSgst + rcmCashUsedCess).toLocaleString('en-IN')}</td>
+                <td className="py-3 px-4 text-right text-amber-400 font-mono text-base">₹{(totalTaxCashChallan + rcmTotalTaxCashChallan).toLocaleString('en-IN')}</td>
               </tr>
             </tfoot>
           </table>

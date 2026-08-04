@@ -464,6 +464,57 @@ test('generateGstr3bSummary netTaxPayable matches the late-fee engine net cash l
   assert.equal(summary.netTaxPayable.stateTax, 0);
 });
 
+test('RCM (reverse charge) purchases are mandatory cash liability, correctly interacting with regular ITC set-off', () => {
+  const company = makeTestCompany();
+  const sales: SalesInvoice[] = [
+    { id: '1', companyId: 'C1', invoiceNo: 'INV-1', invoiceDate: '2026-06-10', customerName: 'A',
+      customerGstin: '29AAACA1234F1Z5', posState: 'Karnataka', posCode: '29', invoiceType: 'B2B',
+      reverseCharge: 'N', hsnCode: '998313', description: 'x', quantity: 1, uqc: 'NOS', rate: 18,
+      taxableValue: 100000, igst: 0, cgst: 9000, sgst: 9000, cess: 0, monthYear: '2026-06', status: 'VALID' },
+  ];
+  // Legal services from an advocate: RCM-liable, and eligible for ITC once the RCM tax is paid.
+  const purchases: PurchaseInvoice[] = [
+    { id: '1', companyId: 'C1', invoiceNo: 'PUR-RCM-1', invoiceDate: '2026-06-05', vendorName: 'Advocate X',
+      vendorGstin: '', posState: 'Karnataka', hsnCode: '998213', taxableValue: 50000,
+      igst: 0, cgst: 4500, sgst: 4500, cess: 0, itcEligible: 'Y', reverseCharge: 'Y',
+      monthYear: '2026-06', status: 'VALID', reconciledWith2B: 'MATCHED' },
+  ];
+
+  const engine = calculateGstLateFeeAndInterest(company, sales, purchases, '2026-06', '2026-07-20', '1.5CR_TO_5CR');
+  // RCM liability itself: always the full 4500+4500, regardless of ITC balance.
+  assert.equal(engine.reverseChargeCashRequired.cgst, 4500);
+  assert.equal(engine.reverseChargeCashRequired.sgst, 4500);
+  assert.equal(engine.reverseChargeCashRequired.total, 9000);
+  // Total cash needed: 9000 mandatory RCM cash, plus the regular 18000 liability reduced by the
+  // 9000 of ITC that becomes available once the RCM tax itself is paid (9000 regular cash left).
+  assert.equal(engine.netCashLiability.total, 18000);
+
+  const summary = generateGstr3bSummary(company, sales, purchases, '2026-06', '2026-07-20', '1.5CR_TO_5CR');
+  assert.equal(summary.table31_OutwardSupplies.d_inwardSuppliesRCM.centralTax, 4500);
+  assert.equal(summary.rcmCashRequired, 9000);
+  // The regular netTaxPayable (Rule 88A, excluding RCM) should show only 4500+4500 remaining
+  // after the RCM-derived ITC offsets half of the regular 9000+9000 liability.
+  assert.equal(summary.netTaxPayable.centralTax, 4500);
+  assert.equal(summary.netTaxPayable.stateTax, 4500);
+  assert.equal(summary.totalCashRequired, 18000);
+});
+
+test('reverse-charge sales are excluded from the supplier\'s own outward tax liability', () => {
+  const company = makeTestCompany();
+  const rcmSale: SalesInvoice = {
+    id: '1', companyId: 'C1', invoiceNo: 'INV-1', invoiceDate: '2026-06-10', customerName: 'A',
+    customerGstin: '29AAACA1234F1Z5', posState: 'Karnataka', posCode: '29', invoiceType: 'B2B',
+    reverseCharge: 'Y', hsnCode: '996511', description: 'GTA freight', quantity: 1, uqc: 'NOS', rate: 5,
+    taxableValue: 100000, igst: 0, cgst: 2500, sgst: 2500, cess: 0, monthYear: '2026-06', status: 'VALID',
+  };
+  const summary = generateGstr3bSummary(company, [rcmSale], [], '2026-06', '2026-07-20', '1.5CR_TO_5CR');
+  // Regression: under RCM the recipient pays this tax directly, so the supplier's own outward
+  // tax liability must not include it, even though the taxable value is still disclosed.
+  assert.equal(summary.table31_OutwardSupplies.a_taxableSupplies.totalTaxableValue, 100000);
+  assert.equal(summary.table31_OutwardSupplies.a_taxableSupplies.centralTax, 0);
+  assert.equal(summary.table31_OutwardSupplies.a_taxableSupplies.stateTax, 0);
+});
+
 test('generateGstr1Json only includes invoices from the selected return period', () => {
   const company = makeTestCompany();
   const sales: SalesInvoice[] = [

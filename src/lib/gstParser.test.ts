@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseGstFile } from './gstParser';
-import { generateGstr1Json, generateGstr3bSummary } from './generators/gstGenerator';
+import { generateGstr1Json, generateGstr3bSummary, generateGstr3bExcel } from './generators/gstGenerator';
 import { calculateGstLateFeeAndInterest, computeItcSetoff } from './calculators/gstLateFeeCalculator';
 import type { Company, SalesInvoice, PurchaseInvoice } from '../types';
 
@@ -462,6 +462,66 @@ test('generateGstr3bSummary netTaxPayable matches the late-fee engine net cash l
   assert.equal(summary.netTaxPayable.integratedTax, 18000);
   assert.equal(summary.netTaxPayable.centralTax, 0);
   assert.equal(summary.netTaxPayable.stateTax, 0);
+});
+
+test('generateGstr3bExcel actually renders the RCM and zero-rated rows into the downloadable file, not just the internal summary object', () => {
+  const company = makeTestCompany();
+  const rcmSale: SalesInvoice = {
+    id: '1', companyId: 'C1', invoiceNo: 'INV-1', invoiceDate: '2026-06-10', customerName: 'A',
+    customerGstin: '', posState: 'Karnataka', posCode: '29', invoiceType: 'B2CS',
+    reverseCharge: 'N', hsnCode: '998313', description: 'x', quantity: 1, uqc: 'NOS', rate: 18,
+    taxableValue: 50000, igst: 0, cgst: 4500, sgst: 4500, cess: 0, monthYear: '2026-06', status: 'VALID',
+  };
+  const rcmPurchase: PurchaseInvoice = {
+    id: '1', companyId: 'C1', invoiceNo: 'PUR-RCM-1', invoiceDate: '2026-06-05', vendorName: 'Advocate X',
+    vendorGstin: '', posState: 'Karnataka', hsnCode: '998213', taxableValue: 20000,
+    igst: 0, cgst: 1800, sgst: 1800, cess: 0, itcEligible: 'Y', reverseCharge: 'Y',
+    monthYear: '2026-06', status: 'VALID', reconciledWith2B: 'MATCHED',
+  };
+
+  const file = generateGstr3bExcel(company, [rcmSale], [rcmPurchase], '2026-06', '2026-07-20', '1.5CR_TO_5CR');
+  assert.ok(file.fileContent.includes('(b) Outward taxable supplies (zero rated)'));
+  assert.ok(file.fileContent.includes('(d) Inward supplies (liable to reverse charge)'));
+  assert.ok(file.fileContent.includes('Reverse Charge (RCM) Cash Required'));
+  assert.ok(file.fileContent.includes('1800')); // the RCM CGST amount should actually appear
+});
+
+test('zero-rated exports are disclosed separately (Table 3.1(b)), and WPAY export IGST still counts as real cash liability', () => {
+  const company = makeTestCompany();
+  const regularSale: SalesInvoice = {
+    id: '1', companyId: 'C1', invoiceNo: 'INV-1', invoiceDate: '2026-06-10', customerName: 'Domestic Co',
+    customerGstin: '29AAACA1234F1Z5', posState: 'Karnataka', posCode: '29', invoiceType: 'B2B',
+    reverseCharge: 'N', hsnCode: '998313', description: 'x', quantity: 1, uqc: 'NOS', rate: 18,
+    taxableValue: 100000, igst: 0, cgst: 9000, sgst: 9000, cess: 0, monthYear: '2026-06', status: 'VALID',
+  };
+  const wopayExport: SalesInvoice = {
+    id: '2', companyId: 'C1', invoiceNo: 'EXP-1', invoiceDate: '2026-06-12', customerName: 'Overseas Client',
+    customerGstin: '', posState: 'Other Territory', posCode: '97', invoiceType: 'EXPORT',
+    reverseCharge: 'N', hsnCode: '998315', description: 'x', quantity: 1, uqc: 'NOS', rate: 0,
+    taxableValue: 200000, igst: 0, cgst: 0, sgst: 0, cess: 0, monthYear: '2026-06', status: 'VALID',
+  };
+  const wpayExport: SalesInvoice = {
+    id: '3', companyId: 'C1', invoiceNo: 'EXP-2', invoiceDate: '2026-06-14', customerName: 'Another Overseas Client',
+    customerGstin: '', posState: 'Other Territory', posCode: '97', invoiceType: 'EXPORT',
+    reverseCharge: 'N', hsnCode: '998315', description: 'x', quantity: 1, uqc: 'NOS', rate: 18,
+    taxableValue: 50000, igst: 9000, cgst: 0, sgst: 0, cess: 0, monthYear: '2026-06', status: 'VALID',
+  };
+
+  const summary = generateGstr3bSummary(company, [regularSale, wopayExport, wpayExport], [], '2026-06', '2026-07-20', '1.5CR_TO_5CR');
+
+  // Regression: export turnover (both WOPAY and WPAY) must not appear in Table 3.1(a)'s regular
+  // domestic taxable value -- only the domestic sale's 100000 should be there.
+  assert.equal(summary.table31_OutwardSupplies.a_taxableSupplies.totalTaxableValue, 100000);
+  assert.equal(summary.table31_OutwardSupplies.a_taxableSupplies.integratedTax, 0);
+
+  // Table 3.1(b) should show both exports' combined taxable value (200000 + 50000) and only the
+  // WPAY export's actual IGST (9000; the WOPAY export correctly contributes 0).
+  assert.equal(summary.table31_OutwardSupplies.b_zeroRatedSupplies.totalTaxableValue, 250000);
+  assert.equal(summary.table31_OutwardSupplies.b_zeroRatedSupplies.integratedTax, 9000);
+
+  // The WPAY export's real IGST liability (9000) must still flow into the actual net cash
+  // liability -- only its disclosure row differs, not whether it's real money owed now.
+  assert.equal(summary.netTaxPayable.integratedTax, 9000);
 });
 
 test('RCM (reverse charge) purchases are mandatory cash liability, correctly interacting with regular ITC set-off', () => {

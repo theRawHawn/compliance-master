@@ -510,13 +510,28 @@ export function generateGstr3bSummary(
   // liability: under RCM, the recipient self-assesses and pays that tax directly to the
   // government, so including it here would double-count/misattribute the liability. The taxable
   // value is still counted (the underlying supply still occurred), only the tax columns exclude it.
+  // Export (zero-rated) supplies are tracked separately (Table 3.1(b)) rather than commingled
+  // with regular domestic supplies (Table 3.1(a)), since they have fundamentally different
+  // treatment (zero-rated under LUT, or IGST paid and later refunded) and must be disclosed
+  // separately on the actual filed return.
   let taxableOutward = 0;
   let igstOutward = 0;
   let cgstOutward = 0;
   let sgstOutward = 0;
   let cessOutward = 0;
+  let taxableZeroRated = 0;
+  let igstZeroRated = 0;
 
   sales.forEach((s) => {
+    if (s.invoiceType === 'EXPORT') {
+      taxableZeroRated += s.taxableValue;
+      igstZeroRated += s.igst;
+      // WPAY exports (IGST actually charged, later refunded via a separate process) still
+      // create a real, current cash/ITC liability that must be paid now -- only the disclosure
+      // row differs. WOPAY exports (igst=0) are unaffected either way.
+      igstOutward += s.igst;
+      return;
+    }
     taxableOutward += s.taxableValue;
     if (s.reverseCharge !== 'Y') {
       igstOutward += s.igst;
@@ -585,10 +600,17 @@ export function generateGstr3bSummary(
     table31_OutwardSupplies: {
       a_taxableSupplies: {
         totalTaxableValue: Number(taxableOutward.toFixed(2)),
-        integratedTax: Number(igstOutward.toFixed(2)),
+        integratedTax: Number((igstOutward - igstZeroRated).toFixed(2)),
         centralTax: Number(cgstOutward.toFixed(2)),
         stateTax: Number(sgstOutward.toFixed(2)),
         cess: Number(cessOutward.toFixed(2)),
+      },
+      // Table 3.1(b): Outward taxable supplies (zero rated) -- exports. Taxable value and any
+      // actual IGST charged (WPAY exports; zero for WOPAY/LUT exports) are shown here rather
+      // than blended into 3.1(a)'s regular domestic supplies.
+      b_zeroRatedSupplies: {
+        totalTaxableValue: Number(taxableZeroRated.toFixed(2)),
+        integratedTax: Number(igstZeroRated.toFixed(2)),
       },
       // Table 3.1(d): Inward supplies liable to reverse charge. Must be paid via cash ledger
       // only -- existing ITC cannot reduce this, regardless of credit balance (Section 16 /
@@ -673,11 +695,27 @@ export function generateGstr3bExcel(
       summary.table31_OutwardSupplies.a_taxableSupplies.stateTax,
       summary.table31_OutwardSupplies.a_taxableSupplies.cess,
     ],
+    [
+      '(b) Outward taxable supplies (zero rated) — Exports',
+      summary.table31_OutwardSupplies.b_zeroRatedSupplies.totalTaxableValue,
+      summary.table31_OutwardSupplies.b_zeroRatedSupplies.integratedTax,
+      0,
+      0,
+      0,
+    ],
+    [
+      '(d) Inward supplies (liable to reverse charge) — Cash Ledger Only, Not Offsettable by ITC',
+      summary.table31_OutwardSupplies.d_inwardSuppliesRCM.totalTaxableValue,
+      summary.table31_OutwardSupplies.d_inwardSuppliesRCM.integratedTax,
+      summary.table31_OutwardSupplies.d_inwardSuppliesRCM.centralTax,
+      summary.table31_OutwardSupplies.d_inwardSuppliesRCM.stateTax,
+      summary.table31_OutwardSupplies.d_inwardSuppliesRCM.cess,
+    ],
     [''],
     ['4. Eligible ITC (Input Tax Credit)'],
     ['Details', 'Integrated Tax (₹)', 'Central Tax (₹)', 'State/UT Tax (₹)', 'Cess (₹)'],
     [
-      '(A)(5) All other ITC (From Purchase Register)',
+      '(A)(5) All other ITC (From Purchase Register, includes RCM tax once paid)',
       summary.table4_EligibleITC.a5_allOtherITC.integratedTax,
       summary.table4_EligibleITC.a5_allOtherITC.centralTax,
       summary.table4_EligibleITC.a5_allOtherITC.stateTax,
@@ -685,11 +723,19 @@ export function generateGstr3bExcel(
     ],
     [''],
     ['5. Net Tax Liability (Estimated before Late Fees & Interest)'],
-    ['Tax Type', 'Outward Tax', 'ITC Available', 'Net Cash Payable'],
+    ['Tax Type', 'Outward Tax', 'ITC Available', 'Net Cash Payable (Regular, excl. RCM)'],
     ['IGST', summary.table31_OutwardSupplies.a_taxableSupplies.integratedTax, summary.table4_EligibleITC.a5_allOtherITC.integratedTax, summary.netTaxPayable.integratedTax],
     ['CGST', summary.table31_OutwardSupplies.a_taxableSupplies.centralTax, summary.table4_EligibleITC.a5_allOtherITC.centralTax, summary.netTaxPayable.centralTax],
     ['SGST', summary.table31_OutwardSupplies.a_taxableSupplies.stateTax, summary.table4_EligibleITC.a5_allOtherITC.stateTax, summary.netTaxPayable.stateTax],
     ['Cess', summary.table31_OutwardSupplies.a_taxableSupplies.cess, summary.table4_EligibleITC.a5_allOtherITC.cess, summary.netTaxPayable.cess],
+    [''],
+    ['5.0(b) Reverse Charge (RCM) Cash Requirement — Cannot be offset by ITC, regardless of balance'],
+    ['Tax Type', 'RCM Liability (₹)'],
+    ['IGST', summary.table31_OutwardSupplies.d_inwardSuppliesRCM.integratedTax],
+    ['CGST', summary.table31_OutwardSupplies.d_inwardSuppliesRCM.centralTax],
+    ['SGST', summary.table31_OutwardSupplies.d_inwardSuppliesRCM.stateTax],
+    ['Cess', summary.table31_OutwardSupplies.d_inwardSuppliesRCM.cess],
+    ['Total RCM Cash Required', summary.rcmCashRequired],
     [''],
     ['5.1 Interest and Late Fee Payable (Section 47 & Section 50)'],
     ['Description', 'Integrated Tax (₹)', 'Central Tax (₹)', 'State/UT Tax (₹)', 'Cess (₹)', 'Total (₹)'],
@@ -710,9 +756,10 @@ export function generateGstr3bExcel(
       engine.gstr3bLateFee.total,
     ],
     [''],
-    ['GRAND TOTAL CASH REQUIREMENT SUMMARY (Net Tax + Interest + Late Fee)'],
+    ['GRAND TOTAL CASH REQUIREMENT SUMMARY (Net Tax + RCM + Interest + Late Fee)'],
     ['Tax / Fee Component', 'Amount (₹)'],
-    ['Net Cash Tax Payable', engine.netCashLiability.total],
+    ['Net Regular Cash Tax Payable', engine.netCashLiability.total - summary.rcmCashRequired],
+    ['Reverse Charge (RCM) Cash Required (Table 3.1(d))', summary.rcmCashRequired],
     ['Sec 50(1) Interest @ 18% p.a.', engine.interestSection50.total],
     ['Sec 47 GSTR-3B Late Fee', engine.gstr3bLateFee.total],
     ['Total Cash Requirement (PMT-06 Challan)', engine.grandTotalCashPayable],

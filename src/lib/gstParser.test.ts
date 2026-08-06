@@ -464,6 +464,36 @@ test('generateGstr3bSummary netTaxPayable matches the late-fee engine net cash l
   assert.equal(summary.netTaxPayable.stateTax, 0);
 });
 
+test('excess (unutilized) ITC is tracked and carried forward, not silently discarded when net liability floors at zero', () => {
+  const company = makeTestCompany();
+  // ITC-heavy scenario: large IGST purchase credit, small CGST/SGST output liability.
+  const sales: SalesInvoice[] = [
+    { id: '1', companyId: 'C1', invoiceNo: 'INV-1', invoiceDate: '2026-06-10', customerName: 'A',
+      customerGstin: '29AAACA1234F1Z5', posState: 'Karnataka', posCode: '29', invoiceType: 'B2B',
+      reverseCharge: 'N', hsnCode: '998313', description: 'x', quantity: 1, uqc: 'NOS', rate: 18,
+      taxableValue: 55555.56, igst: 0, cgst: 5000, sgst: 5000, cess: 0, monthYear: '2026-06', status: 'VALID' },
+  ];
+  const purchases: PurchaseInvoice[] = [
+    { id: '1', companyId: 'C1', invoiceNo: 'PUR-1', invoiceDate: '2026-06-05', vendorName: 'B',
+      vendorGstin: '33AAACB1234F1Z5', posState: 'Tamil Nadu', hsnCode: '998313',
+      taxableValue: 111111.11, igst: 20000, cgst: 0, sgst: 0, cess: 0, itcEligible: 'Y',
+      monthYear: '2026-06', status: 'VALID', reconciledWith2B: 'MATCHED' },
+  ];
+
+  const engine = calculateGstLateFeeAndInterest(company, sales, purchases, '2026-06', '2026-07-20', '1.5CR_TO_5CR');
+  // 20000 IGST credit offsets IGST(0), then CGST(5000), then SGST(5000) = 10000 consumed,
+  // leaving 10000 unutilized IGST credit carried forward.
+  assert.equal(engine.excessItcCarriedForward.igst, 10000);
+  assert.equal(engine.excessItcCarriedForward.total, 10000);
+  assert.equal(engine.netCashLiability.total, 0);
+
+  const summary = generateGstr3bSummary(company, sales, purchases, '2026-06', '2026-07-20', '1.5CR_TO_5CR');
+  assert.equal(summary.excessItcCarriedForward.total, 10000);
+
+  const file = generateGstr3bExcel(company, sales, purchases, '2026-06', '2026-07-20', '1.5CR_TO_5CR');
+  assert.ok(file.fileContent.includes('Excess ITC Carried Forward'));
+});
+
 test('generateGstr3bExcel actually renders the RCM and zero-rated rows into the downloadable file, not just the internal summary object', () => {
   const company = makeTestCompany();
   const rcmSale: SalesInvoice = {

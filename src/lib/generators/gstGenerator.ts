@@ -4,7 +4,7 @@
 
 import { Company, SalesInvoice, PurchaseInvoice, GeneratedFile } from '../../types';
 import * as XLSX from 'xlsx';
-import { calculateGstLateFeeAndInterest, TurnoverSlab, previousMonthYear, todayIso, computeItcSetoff } from '../calculators/gstLateFeeCalculator';
+import { calculateGstLateFeeAndInterest, TurnoverSlab, previousMonthYear, todayIso, computeItcSetoff, computeExcessItc } from '../calculators/gstLateFeeCalculator';
 
 export function formatGstPeriod(monthYear: string): string {
   // Input: '2026-06' -> Output: '062026'
@@ -592,6 +592,13 @@ export function generateGstr3bSummary(
     { igst: igstOutward, cgst: cgstOutward, sgst: sgstOutward, cess: cessOutward },
     { igst: igstItc, cgst: cgstItc, sgst: sgstItc, cess: cessItc }
   );
+  // Unutilized ITC balance carried forward to the next return period (e.g. an ITC-heavy month
+  // leaves a credit balance rather than a negative liability) -- must be tracked and disclosed,
+  // not silently discarded when net liability is floored at zero.
+  const excessItcCarriedForward = computeExcessItc(
+    { igst: igstOutward, cgst: cgstOutward, sgst: sgstOutward, cess: cessOutward },
+    { igst: igstItc, cgst: cgstItc, sgst: sgstItc, cess: cessItc }
+  );
 
   const summary = {
     gstin: company.gstin,
@@ -636,6 +643,14 @@ export function generateGstr3bSummary(
       centralTax: Number(netTaxPayable.cgst.toFixed(2)),
       stateTax: Number(netTaxPayable.sgst.toFixed(2)),
       cess: Number(netTaxPayable.cess.toFixed(2)),
+    },
+    // Unutilized ITC balance carried forward to the next return period.
+    excessItcCarriedForward: {
+      integratedTax: Number(excessItcCarriedForward.igst.toFixed(2)),
+      centralTax: Number(excessItcCarriedForward.cgst.toFixed(2)),
+      stateTax: Number(excessItcCarriedForward.sgst.toFixed(2)),
+      cess: Number(excessItcCarriedForward.cess.toFixed(2)),
+      total: Number(excessItcCarriedForward.total.toFixed(2)),
     },
     // Mandatory cash-only RCM liability (Table 3.1(d)) -- always payable in full regardless of
     // ITC balance, so it's kept separate from netTaxPayable rather than merged into it.
@@ -723,11 +738,12 @@ export function generateGstr3bExcel(
     ],
     [''],
     ['5. Net Tax Liability (Estimated before Late Fees & Interest)'],
-    ['Tax Type', 'Outward Tax', 'ITC Available', 'Net Cash Payable (Regular, excl. RCM)'],
-    ['IGST', summary.table31_OutwardSupplies.a_taxableSupplies.integratedTax, summary.table4_EligibleITC.a5_allOtherITC.integratedTax, summary.netTaxPayable.integratedTax],
-    ['CGST', summary.table31_OutwardSupplies.a_taxableSupplies.centralTax, summary.table4_EligibleITC.a5_allOtherITC.centralTax, summary.netTaxPayable.centralTax],
-    ['SGST', summary.table31_OutwardSupplies.a_taxableSupplies.stateTax, summary.table4_EligibleITC.a5_allOtherITC.stateTax, summary.netTaxPayable.stateTax],
-    ['Cess', summary.table31_OutwardSupplies.a_taxableSupplies.cess, summary.table4_EligibleITC.a5_allOtherITC.cess, summary.netTaxPayable.cess],
+    ['Tax Type', 'Outward Tax', 'ITC Available', 'Net Cash Payable (Regular, excl. RCM)', 'Excess ITC Carried Forward'],
+    ['IGST', summary.table31_OutwardSupplies.a_taxableSupplies.integratedTax, summary.table4_EligibleITC.a5_allOtherITC.integratedTax, summary.netTaxPayable.integratedTax, summary.excessItcCarriedForward.integratedTax],
+    ['CGST', summary.table31_OutwardSupplies.a_taxableSupplies.centralTax, summary.table4_EligibleITC.a5_allOtherITC.centralTax, summary.netTaxPayable.centralTax, summary.excessItcCarriedForward.centralTax],
+    ['SGST', summary.table31_OutwardSupplies.a_taxableSupplies.stateTax, summary.table4_EligibleITC.a5_allOtherITC.stateTax, summary.netTaxPayable.stateTax, summary.excessItcCarriedForward.stateTax],
+    ['Cess', summary.table31_OutwardSupplies.a_taxableSupplies.cess, summary.table4_EligibleITC.a5_allOtherITC.cess, summary.netTaxPayable.cess, summary.excessItcCarriedForward.cess],
+    ['Total Excess ITC Carried Forward to Next Period', '', '', '', summary.excessItcCarriedForward.total],
     [''],
     ['5.0(b) Reverse Charge (RCM) Cash Requirement — Cannot be offset by ITC, regardless of balance'],
     ['Tax Type', 'RCM Liability (₹)'],

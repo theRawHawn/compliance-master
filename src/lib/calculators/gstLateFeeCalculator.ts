@@ -57,6 +57,16 @@ export interface GstLateFeeInterestResult {
     cess: number;
     total: number;
   };
+  /** Unutilized ITC balance carried forward to the next return period (e.g. an ITC-heavy month
+   *  leaves a credit balance rather than a negative liability). Not included in
+   *  netCashLiability, which is already correctly floored at zero per head. */
+  excessItcCarriedForward: {
+    igst: number;
+    cgst: number;
+    sgst: number;
+    cess: number;
+    total: number;
+  };
   gstr1LateFee: {
     cgst: number;
     sgst: number;
@@ -85,6 +95,47 @@ export interface GstLateFeeInterestResult {
   totalPenaltiesAndInterest: number;
   grandTotalCashPayable: number;
   statutoryNotes: string[];
+}
+
+/**
+ * Computes the excess (unutilized) ITC left over after Rule 88A cross-utilization -- the credit
+ * balance that carries forward to the next return period. Mirrors the same cross-utilization
+ * order as computeItcSetoff (IGST credit first against IGST, then CGST, then SGST; CGST/SGST
+ * credit never cross the CGST/SGST boundary), since the two must always agree: whatever ITC
+ * wasn't consumed by computeItcSetoff's net-payable calculation is exactly what carries forward.
+ */
+export function computeExcessItc(
+  outward: { igst: number; cgst: number; sgst: number; cess: number },
+  itc: { igst: number; cgst: number; sgst: number; cess: number }
+): { igst: number; cgst: number; sgst: number; cess: number; total: number } {
+  const setoffIgstAgainstIgst = Math.min(itc.igst, outward.igst);
+  let remItcIgst = itc.igst - setoffIgstAgainstIgst;
+  const remOutIgstAfterIgst = outward.igst - setoffIgstAgainstIgst;
+
+  const setoffIgstAgainstCgst = Math.min(remItcIgst, outward.cgst);
+  remItcIgst -= setoffIgstAgainstCgst;
+  const remOutCgstAfterIgst = outward.cgst - setoffIgstAgainstCgst;
+
+  const setoffIgstAgainstSgst = Math.min(remItcIgst, outward.sgst);
+  remItcIgst -= setoffIgstAgainstSgst; // leftover unutilized IGST credit
+  const remOutSgstAfterIgst = outward.sgst - setoffIgstAgainstSgst;
+
+  const setoffCgstAgainstCgst = Math.min(itc.cgst, remOutCgstAfterIgst);
+  const remItcCgst = itc.cgst - setoffCgstAgainstCgst;
+
+  const setoffSgstAgainstSgst = Math.min(itc.sgst, remOutSgstAfterIgst);
+  const remItcSgst = itc.sgst - setoffSgstAgainstSgst;
+
+  const setoffCess = Math.min(itc.cess, outward.cess);
+  const remItcCess = itc.cess - setoffCess;
+
+  return {
+    igst: remItcIgst,
+    cgst: remItcCgst,
+    sgst: remItcSgst,
+    cess: remItcCess,
+    total: remItcIgst + remItcCgst + remItcSgst + remItcCess,
+  };
 }
 
 /**
@@ -294,6 +345,13 @@ export function calculateGstLateFeeAndInterest(
     { igst: outIgst, cgst: outCgst, sgst: outSgst, cess: outCess },
     { igst: itcIgst, cgst: itcCgst, sgst: itcSgst, cess: itcCess }
   );
+  // Unutilized ITC balance carried forward to the next return period -- e.g. an ITC-heavy month
+  // (large purchases, small sales) leaves a credit balance rather than reducing this period's
+  // liability to a negative number, so it must be tracked explicitly rather than silently lost.
+  const excessItcCarriedForward = computeExcessItc(
+    { igst: outIgst, cgst: outCgst, sgst: outSgst, cess: outCess },
+    { igst: itcIgst, cgst: itcCgst, sgst: itcSgst, cess: itcCess }
+  );
   const netIgst = regularNetLiability.igst + rcmIgst;
   const netCgst = regularNetLiability.cgst + rcmCgst;
   const netSgst = regularNetLiability.sgst + rcmSgst;
@@ -435,6 +493,7 @@ export function calculateGstLateFeeAndInterest(
       total: netTotalCash,
     },
     reverseChargeCashRequired,
+    excessItcCarriedForward,
     gstr1LateFee,
     gstr3bLateFee,
     interestSection50,

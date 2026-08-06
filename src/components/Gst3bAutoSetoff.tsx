@@ -609,6 +609,16 @@ export const Gst3bAutoSetoff: React.FC<Gst3bAutoSetoffProps> = ({
             </tfoot>
           </table>
         </div>
+        {summary.excessItcCarriedForward.total > 0 && (
+          <div className="m-4 p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs font-semibold text-emerald-800 flex items-start gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+            <span>
+              You have ₹{summary.excessItcCarriedForward.total.toLocaleString('en-IN')} of unutilized ITC
+              (IGST ₹{summary.excessItcCarriedForward.integratedTax.toLocaleString('en-IN')}, CGST ₹{summary.excessItcCarriedForward.centralTax.toLocaleString('en-IN')},
+              SGST ₹{summary.excessItcCarriedForward.stateTax.toLocaleString('en-IN')}) that will carry forward as a credit balance to your next return period.
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Invoice Date Level Delayed Notice Audit Table */}

@@ -509,6 +509,12 @@ test('grossOutwardTaxForLiability includes real WPAY export IGST, distinct from 
   // must still include it, and must agree with the late-fee engine's own total.
   assert.equal(summary.grossOutwardTaxForLiability.integratedTax, 9000);
   assert.equal(summary.grossOutwardTaxForLiability.integratedTax, engine.netCashLiability.igst);
+  // Also verify the actual rendered Excel file's Section 5 doesn't show a misleadingly-zero
+  // 'Outward Tax' figure next to a nonzero 'Net Cash Payable' for the same tax head.
+  const file = generateGstr3bExcel(company, [wpayExport], [], '2026-06', '2026-07-20', '1.5CR_TO_5CR');
+  const igstRow = file.fileContent.split('\n').find((line) => line.startsWith('IGST,'));
+  assert.ok(igstRow, 'expected an IGST row in Section 5');
+  assert.ok(igstRow!.includes('9000'), `expected the IGST row to show 9000, got: ${igstRow}`);
 });
 
 test('Table 3.2 groups inter-state supplies to unregistered persons by destination state, excluding intra-state/registered/export/RCM', () => {

@@ -541,6 +541,27 @@ export function generateGstr3bSummary(
     }
   });
 
+  // Table 3.2: Inter-state supplies to unregistered persons, broken down by destination
+  // (place of supply) state -- required disclosure distinct from the aggregate totals in 3.1.
+  // The official form also includes composition taxpayers and UIN holders in this table, but the
+  // current data model has no field distinguishing those from a simple unregistered customer, so
+  // this covers the identifiable case (no GSTIN) rather than silently omitting the whole table.
+  const interStateUnregisteredByState: Record<string, { posCode: string; posState: string; taxableValue: number; igst: number }> = {};
+  sales.forEach((s) => {
+    if (s.invoiceType === 'EXPORT' || s.reverseCharge === 'Y') return;
+    const isUnregistered = !s.customerGstin || s.customerGstin.trim().length !== 15;
+    const isInterState = s.posCode !== company.stateCode;
+    if (!isUnregistered || !isInterState) return;
+    if (!interStateUnregisteredByState[s.posCode]) {
+      interStateUnregisteredByState[s.posCode] = { posCode: s.posCode, posState: s.posState, taxableValue: 0, igst: 0 };
+    }
+    interStateUnregisteredByState[s.posCode].taxableValue += s.taxableValue;
+    interStateUnregisteredByState[s.posCode].igst += s.igst;
+  });
+  const table32_InterStateUnregistered = Object.values(interStateUnregisteredByState)
+    .map((r) => ({ ...r, taxableValue: Number(r.taxableValue.toFixed(2)), igst: Number(r.igst.toFixed(2)) }))
+    .sort((a, b) => a.posCode.localeCompare(b.posCode));
+
   // 3.1(d) Inward supplies liable to reverse charge, and 4. Eligible ITC summary.
   let taxableInward = 0;
   let igstItc = 0;
@@ -630,6 +651,8 @@ export function generateGstr3bSummary(
         cess: Number(rcmCess.toFixed(2)),
       },
     },
+    // Table 3.2: inter-state supplies to unregistered persons, by destination state.
+    table32_InterStateUnregistered,
     table4_EligibleITC: {
       a5_allOtherITC: {
         integratedTax: Number(igstItc.toFixed(2)),
@@ -726,6 +749,12 @@ export function generateGstr3bExcel(
       summary.table31_OutwardSupplies.d_inwardSuppliesRCM.stateTax,
       summary.table31_OutwardSupplies.d_inwardSuppliesRCM.cess,
     ],
+    [''],
+    ['3.2 Of the supplies shown in 3.1(a), inter-state supplies made to unregistered persons, by destination state'],
+    ['Place of Supply (State Code)', 'State Name', 'Total Taxable Value (₹)', 'Integrated Tax (₹)'],
+    ...(summary.table32_InterStateUnregistered.length > 0
+      ? summary.table32_InterStateUnregistered.map((r) => [r.posCode, r.posState, r.taxableValue, r.igst])
+      : [['No inter-state supplies to unregistered persons this period', '', '', '']]),
     [''],
     ['4. Eligible ITC (Input Tax Credit)'],
     ['Details', 'Integrated Tax (₹)', 'Central Tax (₹)', 'State/UT Tax (₹)', 'Cess (₹)'],

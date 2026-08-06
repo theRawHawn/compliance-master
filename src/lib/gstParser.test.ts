@@ -464,6 +464,42 @@ test('generateGstr3bSummary netTaxPayable matches the late-fee engine net cash l
   assert.equal(summary.netTaxPayable.stateTax, 0);
 });
 
+test('Table 3.2 groups inter-state supplies to unregistered persons by destination state, excluding intra-state/registered/export/RCM', () => {
+  const company = makeTestCompany(); // seller in Karnataka (29)
+  const sales: SalesInvoice[] = [
+    // Inter-state, unregistered (Tamil Nadu) -> should appear in Table 3.2.
+    { id: '1', companyId: 'C1', invoiceNo: 'INV-1', invoiceDate: '2026-06-10', customerName: 'Walk-in A',
+      customerGstin: '', posState: 'Tamil Nadu', posCode: '33', invoiceType: 'B2CS',
+      reverseCharge: 'N', hsnCode: '998313', description: 'x', quantity: 1, uqc: 'NOS', rate: 18,
+      taxableValue: 50000, igst: 9000, cgst: 0, sgst: 0, cess: 0, monthYear: '2026-06', status: 'VALID' },
+    // Another inter-state unregistered sale to the SAME state -> should be aggregated with the above.
+    { id: '2', companyId: 'C1', invoiceNo: 'INV-2', invoiceDate: '2026-06-11', customerName: 'Walk-in B',
+      customerGstin: '', posState: 'Tamil Nadu', posCode: '33', invoiceType: 'B2CS',
+      reverseCharge: 'N', hsnCode: '998313', description: 'x', quantity: 1, uqc: 'NOS', rate: 18,
+      taxableValue: 30000, igst: 5400, cgst: 0, sgst: 0, cess: 0, monthYear: '2026-06', status: 'VALID' },
+    // Intra-state (Karnataka, same as seller) unregistered -> must NOT appear (not inter-state).
+    { id: '3', companyId: 'C1', invoiceNo: 'INV-3', invoiceDate: '2026-06-12', customerName: 'Walk-in C',
+      customerGstin: '', posState: 'Karnataka', posCode: '29', invoiceType: 'B2CS',
+      reverseCharge: 'N', hsnCode: '998313', description: 'x', quantity: 1, uqc: 'NOS', rate: 18,
+      taxableValue: 20000, igst: 0, cgst: 1800, sgst: 1800, cess: 0, monthYear: '2026-06', status: 'VALID' },
+    // Inter-state but REGISTERED (B2B) -> must NOT appear (this table is for unregistered only).
+    { id: '4', companyId: 'C1', invoiceNo: 'INV-4', invoiceDate: '2026-06-13', customerName: 'Registered Co',
+      customerGstin: '33AAACR1234F1Z5', posState: 'Tamil Nadu', posCode: '33', invoiceType: 'B2B',
+      reverseCharge: 'N', hsnCode: '998313', description: 'x', quantity: 1, uqc: 'NOS', rate: 18,
+      taxableValue: 100000, igst: 18000, cgst: 0, sgst: 0, cess: 0, monthYear: '2026-06', status: 'VALID' },
+  ];
+
+  const summary = generateGstr3bSummary(company, sales, [], '2026-06', '2026-07-20', '1.5CR_TO_5CR');
+  assert.equal(summary.table32_InterStateUnregistered.length, 1);
+  assert.equal(summary.table32_InterStateUnregistered[0].posCode, '33');
+  assert.equal(summary.table32_InterStateUnregistered[0].taxableValue, 80000);
+  assert.equal(summary.table32_InterStateUnregistered[0].igst, 14400);
+
+  const file = generateGstr3bExcel(company, sales, [], '2026-06', '2026-07-20', '1.5CR_TO_5CR');
+  assert.ok(file.fileContent.includes('3.2 Of the supplies shown'));
+  assert.ok(file.fileContent.includes('80000'));
+});
+
 test('excess (unutilized) ITC is tracked and carried forward, not silently discarded when net liability floors at zero', () => {
   const company = makeTestCompany();
   // ITC-heavy scenario: large IGST purchase credit, small CGST/SGST output liability.

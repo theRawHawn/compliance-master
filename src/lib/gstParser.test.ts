@@ -464,6 +464,33 @@ test('generateGstr3bSummary netTaxPayable matches the late-fee engine net cash l
   assert.equal(summary.netTaxPayable.stateTax, 0);
 });
 
+test('ineligible ITC is disclosed separately (Table 4B), not just silently excluded from the eligible total', () => {
+  const company = makeTestCompany();
+  const purchases: PurchaseInvoice[] = [
+    { id: '1', companyId: 'C1', invoiceNo: 'PUR-1', invoiceDate: '2026-06-05', vendorName: 'Eligible Vendor',
+      vendorGstin: '29AAACE1234F1Z5', posState: 'Karnataka', hsnCode: '998313', taxableValue: 50000,
+      igst: 0, cgst: 4500, sgst: 4500, cess: 0, itcEligible: 'Y', monthYear: '2026-06', status: 'VALID',
+      reconciledWith2B: 'MATCHED' },
+    // Ineligible ITC (e.g. a motor vehicle purchase, blocked under Section 17(5)).
+    { id: '2', companyId: 'C1', invoiceNo: 'PUR-2', invoiceDate: '2026-06-06', vendorName: 'Car Dealer',
+      vendorGstin: '29AAACC1234F1Z5', posState: 'Karnataka', hsnCode: '870323', taxableValue: 800000,
+      igst: 0, cgst: 72000, sgst: 72000, cess: 0, itcEligible: 'N', monthYear: '2026-06', status: 'VALID',
+      reconciledWith2B: 'MATCHED' },
+  ];
+
+  const summary = generateGstr3bSummary(company, [], purchases, '2026-06', '2026-07-20', '1.5CR_TO_5CR');
+  // Eligible ITC total must only include the eligible purchase.
+  assert.equal(summary.table4_EligibleITC.a5_allOtherITC.centralTax, 4500);
+  // Ineligible ITC must be visibly disclosed, not just silently dropped.
+  assert.equal(summary.table4_EligibleITC.b1_ineligibleItc.centralTax, 72000);
+  assert.equal(summary.table4_EligibleITC.b1_ineligibleItc.stateTax, 72000);
+  assert.equal(summary.table4_EligibleITC.b1_ineligibleItc.totalTaxableValue, 800000);
+
+  const file = generateGstr3bExcel(company, [], purchases, '2026-06', '2026-07-20', '1.5CR_TO_5CR');
+  assert.ok(file.fileContent.includes('ITC Reversed / Not Availed'));
+  assert.ok(file.fileContent.includes('72000'));
+});
+
 test('Table 3.2 groups inter-state supplies to unregistered persons by destination state, excluding intra-state/registered/export/RCM', () => {
   const company = makeTestCompany(); // seller in Karnataka (29)
   const sales: SalesInvoice[] = [

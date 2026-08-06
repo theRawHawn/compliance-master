@@ -573,6 +573,13 @@ export function generateGstr3bSummary(
   let rcmCgst = 0;
   let rcmSgst = 0;
   let rcmCess = 0;
+  // Table 4(B): ITC not availed (ineligible) -- tracked separately so the exclusion is visible
+  // and explainable, not just a silently smaller ITC total than the full purchase register shows.
+  let ineligibleTaxableValue = 0;
+  let ineligibleIgst = 0;
+  let ineligibleCgst = 0;
+  let ineligibleSgst = 0;
+  let ineligibleCess = 0;
 
   purchases.forEach((p) => {
     if (p.reverseCharge === 'Y') {
@@ -588,6 +595,12 @@ export function generateGstr3bSummary(
       cgstItc += p.cgst;
       sgstItc += p.sgst;
       cessItc += p.cess || 0;
+    } else {
+      ineligibleTaxableValue += p.taxableValue;
+      ineligibleIgst += p.igst;
+      ineligibleCgst += p.cgst;
+      ineligibleSgst += p.sgst;
+      ineligibleCess += p.cess || 0;
     }
   });
 
@@ -659,6 +672,15 @@ export function generateGstr3bSummary(
         centralTax: Number(cgstItc.toFixed(2)),
         stateTax: Number(sgstItc.toFixed(2)),
         cess: Number(cessItc.toFixed(2)),
+      },
+      // Table 4(B): ITC not availed / ineligible -- disclosed separately so the exclusion from
+      // the eligible ITC total above is visible and explainable.
+      b1_ineligibleItc: {
+        totalTaxableValue: Number(ineligibleTaxableValue.toFixed(2)),
+        integratedTax: Number(ineligibleIgst.toFixed(2)),
+        centralTax: Number(ineligibleCgst.toFixed(2)),
+        stateTax: Number(ineligibleSgst.toFixed(2)),
+        cess: Number(ineligibleCess.toFixed(2)),
       },
     },
     netTaxPayable: {
@@ -764,6 +786,13 @@ export function generateGstr3bExcel(
       summary.table4_EligibleITC.a5_allOtherITC.centralTax,
       summary.table4_EligibleITC.a5_allOtherITC.stateTax,
       summary.table4_EligibleITC.a5_allOtherITC.cess,
+    ],
+    [
+      '(B)(1) ITC Reversed / Not Availed (Ineligible — Sec 17(5) or marked ineligible in purchase register)',
+      summary.table4_EligibleITC.b1_ineligibleItc.integratedTax,
+      summary.table4_EligibleITC.b1_ineligibleItc.centralTax,
+      summary.table4_EligibleITC.b1_ineligibleItc.stateTax,
+      summary.table4_EligibleITC.b1_ineligibleItc.cess,
     ],
     [''],
     ['5. Net Tax Liability (Estimated before Late Fees & Interest)'],

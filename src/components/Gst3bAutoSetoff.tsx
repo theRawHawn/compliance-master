@@ -74,10 +74,10 @@ export const Gst3bAutoSetoff: React.FC<Gst3bAutoSetoffProps> = ({
   const summary = generateGstr3bSummary(company, sales, purchases, monthYear, actualFilingDate, turnoverSlab);
 
   // Table 3.1 Gross Output Tax Liability
-  const outIgst = summary.table31_OutwardSupplies.a_taxableSupplies.integratedTax;
-  const outCgst = summary.table31_OutwardSupplies.a_taxableSupplies.centralTax;
-  const outSgst = summary.table31_OutwardSupplies.a_taxableSupplies.stateTax;
-  const outCess = summary.table31_OutwardSupplies.a_taxableSupplies.cess;
+  const outIgst = summary.grossOutwardTaxForLiability.integratedTax;
+  const outCgst = summary.grossOutwardTaxForLiability.centralTax;
+  const outSgst = summary.grossOutwardTaxForLiability.stateTax;
+  const outCess = summary.grossOutwardTaxForLiability.cess;
 
   // Table 4 Input Tax Credit Available
   const itcIgst = summary.table4_EligibleITC.a5_allOtherITC.integratedTax;

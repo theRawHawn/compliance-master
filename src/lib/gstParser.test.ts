@@ -491,6 +491,26 @@ test('ineligible ITC is disclosed separately (Table 4B), not just silently exclu
   assert.ok(file.fileContent.includes('72000'));
 });
 
+test('grossOutwardTaxForLiability includes real WPAY export IGST, distinct from the disclosure-only a_taxableSupplies field', () => {
+  const company = makeTestCompany();
+  const wpayExport: SalesInvoice = {
+    id: '1', companyId: 'C1', invoiceNo: 'EXP-1', invoiceDate: '2026-06-14', customerName: 'Overseas Client',
+    customerGstin: '', posState: 'Other Territory', posCode: '97', invoiceType: 'EXPORT',
+    reverseCharge: 'N', hsnCode: '998315', description: 'x', quantity: 1, uqc: 'NOS', rate: 18,
+    taxableValue: 50000, igst: 9000, cgst: 0, sgst: 0, cess: 0, monthYear: '2026-06', status: 'VALID',
+  };
+
+  const summary = generateGstr3bSummary(company, [wpayExport], [], '2026-06', '2026-07-20', '1.5CR_TO_5CR');
+  const engine = calculateGstLateFeeAndInterest(company, [wpayExport], [], '2026-06', '2026-07-20', '1.5CR_TO_5CR');
+
+  // Regression: a_taxableSupplies (Table 3.1(a) disclosure) correctly excludes export IGST...
+  assert.equal(summary.table31_OutwardSupplies.a_taxableSupplies.integratedTax, 0);
+  // ...but grossOutwardTaxForLiability (what any consumer computing real net liability must use)
+  // must still include it, and must agree with the late-fee engine's own total.
+  assert.equal(summary.grossOutwardTaxForLiability.integratedTax, 9000);
+  assert.equal(summary.grossOutwardTaxForLiability.integratedTax, engine.netCashLiability.igst);
+});
+
 test('Table 3.2 groups inter-state supplies to unregistered persons by destination state, excluding intra-state/registered/export/RCM', () => {
   const company = makeTestCompany(); // seller in Karnataka (29)
   const sales: SalesInvoice[] = [

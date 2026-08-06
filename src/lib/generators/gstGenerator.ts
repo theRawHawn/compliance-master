@@ -664,6 +664,17 @@ export function generateGstr3bSummary(
         cess: Number(rcmCess.toFixed(2)),
       },
     },
+    // True full outward tax liability (before ITC set-off), INCLUDING any real WPAY export IGST
+    // -- distinct from a_taxableSupplies above, which intentionally excludes export IGST for
+    // Table 3.1(a) disclosure purposes only. Consumers computing actual net liability (e.g. the
+    // detailed Rule 88A breakdown in Gst3bAutoSetoff.tsx) must use this field, not
+    // a_taxableSupplies, or a WPAY export's real, currently-owed IGST would silently disappear.
+    grossOutwardTaxForLiability: {
+      integratedTax: Number(igstOutward.toFixed(2)),
+      centralTax: Number(cgstOutward.toFixed(2)),
+      stateTax: Number(sgstOutward.toFixed(2)),
+      cess: Number(cessOutward.toFixed(2)),
+    },
     // Table 3.2: inter-state supplies to unregistered persons, by destination state.
     table32_InterStateUnregistered,
     table4_EligibleITC: {

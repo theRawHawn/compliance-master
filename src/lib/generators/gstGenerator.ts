@@ -20,7 +20,7 @@ export function generateGstr1Json(company: Company, allSales: SalesInvoice[], mo
 
   // B2B Invoices grouped by Customer GSTIN
   const b2bMap: Record<string, any[]> = {};
-  // B2CL (Inter-state > 2.5L to unregistered)
+  // B2CL (Inter-state, unregistered, invoice value > Rs.1 lakh -- Notification No. 12/2024-CT)
   const b2clList: any[] = [];
   // B2CS (Aggregated by POS and Rate)
   const b2csMap: Record<string, { sply_ty: string; pos: string; rt: number; txval: number; iamt: number; camt: number; samt: number; csamt: number }> = {};
@@ -185,6 +185,8 @@ export function generateGstr1Json(company: Company, allSales: SalesInvoice[], mo
     csamt: Number(h.csamt.toFixed(2)),
   }));
 
+  const salesByDate = [...sales].sort((a, b) => a.invoiceDate.localeCompare(b.invoiceDate));
+
   // gt/cur_gt (aggregate annual turnover) cannot be reliably derived from a single period's
   // invoices alone -- the GST portal expects the taxpayer's actual PAN-level turnover for the
   // relevant financial year, which this tool does not independently know. Using this period's
@@ -212,7 +214,7 @@ export function generateGstr1Json(company: Company, allSales: SalesInvoice[], mo
         {
           doc_num: 1,
           doc_typ: 'Invoices for outward supply',
-          docs: [{ num: 1, from: sales[0]?.invoiceNo || 'INV-001', to: sales[sales.length - 1]?.invoiceNo || 'INV-010', totnum: sales.length, cancel: 0, net_issue: sales.length }],
+          docs: [{ num: 1, from: salesByDate[0]?.invoiceNo || 'INV-001', to: salesByDate[salesByDate.length - 1]?.invoiceNo || 'INV-010', totnum: sales.length, cancel: 0, net_issue: sales.length }],
         },
       ],
     },

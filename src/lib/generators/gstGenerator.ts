@@ -95,6 +95,15 @@ export function generateGstr1Json(company: Company, allSales: SalesInvoice[], mo
       // See the cdnrList declaration above: not populated, since the current data model can't
       // distinguish credit vs debit notes. Explicitly caught here (rather than falling through)
       // so a CDNR-typed invoice is never misrouted into B2CL/B2CS by the heuristics below.
+    } else if (s.invoiceType === 'NIL_EXEMPT') {
+      // GSTR-1 Table 8 (Nil rated/exempted/non-GST outward supplies) uses an aggregated schema
+      // distinct from the simple per-invoice lists used for B2B/B2CL/EXPORT (grouped by supply
+      // type -- inter/intra-state, B2B/B2C -- rather than per-invoice). Not yet built out here;
+      // this branch's purpose for now is only to ensure a NIL_EXEMPT invoice (zero tax, but often
+      // a large taxable value -- e.g. exempt healthcare or education services) is never misrouted
+      // into B2CL by the interstate+value heuristic below, the same bug class already found and
+      // fixed for EXPORT. See generateGstr3bSummary's Table 3.1(c) for the GSTR-3B-side handling,
+      // which IS fully implemented.
     } else if (s.invoiceType === 'B2CL' || (isInterstate && invVal > 100000 && (!s.customerGstin || s.customerGstin.length < 15))) {
       b2clList.push({
         pos: s.posCode,
@@ -523,8 +532,15 @@ export function generateGstr3bSummary(
   let cessOutward = 0;
   let taxableZeroRated = 0;
   let igstZeroRated = 0;
+  // Table 3.1(c): Nil rated / exempt outward supplies. Zero tax by definition; only the taxable
+  // value is disclosed, separately from 3.1(a)'s regular taxable supplies.
+  let taxableNilExempt = 0;
 
   sales.forEach((s) => {
+    if (s.invoiceType === 'NIL_EXEMPT') {
+      taxableNilExempt += s.taxableValue;
+      return;
+    }
     if (s.invoiceType === 'EXPORT') {
       taxableZeroRated += s.taxableValue;
       igstZeroRated += s.igst;
@@ -655,6 +671,10 @@ export function generateGstr3bSummary(
         totalTaxableValue: Number(taxableZeroRated.toFixed(2)),
         integratedTax: Number(igstZeroRated.toFixed(2)),
       },
+      // Table 3.1(c): Nil rated / exempt outward supplies. Zero tax by definition.
+      c_nilExemptSupplies: {
+        totalTaxableValue: Number(taxableNilExempt.toFixed(2)),
+      },
       // Table 3.1(d): Inward supplies liable to reverse charge. Must be paid via cash ledger
       // only -- existing ITC cannot reduce this, regardless of credit balance (Section 16 /
       // Rule 85). See rcmCashRequired below for the mandatory cash impact.
@@ -777,6 +797,14 @@ export function generateGstr3bExcel(
       0,
     ],
     [
+      '(c) Other outward supplies (Nil rated, exempted) — see note on Rule 42/43 below',
+      summary.table31_OutwardSupplies.c_nilExemptSupplies.totalTaxableValue,
+      0,
+      0,
+      0,
+      0,
+    ],
+    [
       '(d) Inward supplies (liable to reverse charge) — Cash Ledger Only, Not Offsettable by ITC',
       summary.table31_OutwardSupplies.d_inwardSuppliesRCM.totalTaxableValue,
       summary.table31_OutwardSupplies.d_inwardSuppliesRCM.integratedTax,
@@ -784,6 +812,9 @@ export function generateGstr3bExcel(
       summary.table31_OutwardSupplies.d_inwardSuppliesRCM.stateTax,
       summary.table31_OutwardSupplies.d_inwardSuppliesRCM.cess,
     ],
+    ...(summary.table31_OutwardSupplies.c_nilExemptSupplies.totalTaxableValue > 0
+      ? [['NOTE: This return has nil-rated/exempt supplies. If any purchases were used for BOTH taxable and exempt supplies (common credit), Rule 42/43 requires a proportionate ITC reversal that is NOT automatically calculated by this tool — verify and adjust ITC manually before filing.']]
+      : []),
     [''],
     ['3.2 Of the supplies shown in 3.1(a), inter-state supplies made to unregistered persons, by destination state'],
     ['Place of Supply (State Code)', 'State Name', 'Total Taxable Value (₹)', 'Integrated Tax (₹)'],

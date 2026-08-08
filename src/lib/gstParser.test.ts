@@ -605,6 +605,34 @@ test('generateGstr3bExcel actually renders the RCM and zero-rated rows into the 
   assert.ok(file.fileContent.includes('1800')); // the RCM CGST amount should actually appear
 });
 
+test('Table 3.1(c) discloses nil-rated/exempt supplies separately, with a Rule 42/43 disclaimer note', () => {
+  const company = makeTestCompany();
+  const regularSale: SalesInvoice = {
+    id: '1', companyId: 'C1', invoiceNo: 'INV-1', invoiceDate: '2026-06-10', customerName: 'A',
+    customerGstin: '29AAACA1234F1Z5', posState: 'Karnataka', posCode: '29', invoiceType: 'B2B',
+    reverseCharge: 'N', hsnCode: '998313', description: 'x', quantity: 1, uqc: 'NOS', rate: 18,
+    taxableValue: 100000, igst: 0, cgst: 9000, sgst: 9000, cess: 0, monthYear: '2026-06', status: 'VALID',
+  };
+  const exemptSale: SalesInvoice = {
+    id: '2', companyId: 'C1', invoiceNo: 'INV-2', invoiceDate: '2026-06-11', customerName: 'Clinic Patient',
+    customerGstin: '', posState: 'Karnataka', posCode: '29', invoiceType: 'NIL_EXEMPT',
+    reverseCharge: 'N', hsnCode: '999312', description: 'Healthcare services (exempt)', quantity: 1, uqc: 'NOS', rate: 0,
+    taxableValue: 40000, igst: 0, cgst: 0, sgst: 0, cess: 0, monthYear: '2026-06', status: 'VALID',
+  };
+
+  const summary = generateGstr3bSummary(company, [regularSale, exemptSale], [], '2026-06', '2026-07-20', '1.5CR_TO_5CR');
+  // Regular taxable supplies must exclude the exempt sale's value.
+  assert.equal(summary.table31_OutwardSupplies.a_taxableSupplies.totalTaxableValue, 100000);
+  // The exempt sale's value must appear in its own row, not be lost.
+  assert.equal(summary.table31_OutwardSupplies.c_nilExemptSupplies.totalTaxableValue, 40000);
+  // No tax impact -- exempt supplies have zero tax by definition, liability unaffected.
+  assert.equal(summary.netTaxPayable.centralTax, 9000);
+
+  const file = generateGstr3bExcel(company, [regularSale, exemptSale], [], '2026-06', '2026-07-20', '1.5CR_TO_5CR');
+  assert.ok(file.fileContent.includes('(c) Other outward supplies (Nil rated, exempted)'));
+  assert.ok(file.fileContent.includes('Rule 42/43'));
+});
+
 test('zero-rated exports are disclosed separately (Table 3.1(b)), and WPAY export IGST still counts as real cash liability', () => {
   const company = makeTestCompany();
   const regularSale: SalesInvoice = {

@@ -75,7 +75,7 @@ export interface Employee {
   ptExempt?: boolean;
 }
 
-export type InvoiceType = 'B2B' | 'B2CL' | 'B2CS' | 'CDNR' | 'EXPORT';
+export type InvoiceType = 'B2B' | 'B2CL' | 'B2CS' | 'CDNR' | 'EXPORT' | 'NIL_EXEMPT';
 
 export interface SalesInvoice {
   id: string;

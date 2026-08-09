@@ -358,6 +358,30 @@ export default function App() {
     setActiveSubTab('PURCHASE');
   };
 
+  const handleUpdateSaleClassification = (id: string, updates: Partial<Pick<SalesInvoice, 'invoiceType' | 'reverseCharge'>>) => {
+    const updated = sales.map((s) => (s.id === id ? { ...s, ...updates } : s));
+    setSales(updated);
+    setStorage('cm_sales', updated);
+
+    fetch(`/api/sales/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    }).catch((e) => console.warn('Sync warning:', e));
+  };
+
+  const handleUpdatePurchaseClassification = (id: string, updates: Partial<Pick<PurchaseInvoice, 'itcEligible' | 'reverseCharge'>>) => {
+    const updated = purchases.map((p) => (p.id === id ? { ...p, ...updates } : p));
+    setPurchases(updated);
+    setStorage('cm_purchases', updated);
+
+    fetch(`/api/purchases/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    }).catch((e) => console.warn('Sync warning:', e));
+  };
+
   const handleImportVendorPayments = async (vpList: Omit<VendorPayment, 'id'>[]) => {
     const items: VendorPayment[] = vpList.map((p, idx) => ({
       ...p,
@@ -511,6 +535,8 @@ export default function App() {
               onGenerateFile={handleGenerateFile}
               onImportSales={handleImportSales}
               onImportPurchases={handleImportPurchases}
+              onUpdateSaleClassification={handleUpdateSaleClassification}
+              onUpdatePurchaseClassification={handleUpdatePurchaseClassification}
               initialSubTab={activeSubTab}
             />
           )}

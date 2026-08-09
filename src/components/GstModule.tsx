@@ -29,6 +29,8 @@ interface GstModuleProps {
   onGenerateFile: (fileType: string) => void;
   onImportSales?: (sales: Omit<SalesInvoice, 'id'>[]) => void;
   onImportPurchases?: (purchases: Omit<PurchaseInvoice, 'id'>[]) => void;
+  onUpdateSaleClassification?: (id: string, updates: Partial<Pick<SalesInvoice, 'invoiceType' | 'reverseCharge'>>) => void;
+  onUpdatePurchaseClassification?: (id: string, updates: Partial<Pick<PurchaseInvoice, 'itcEligible' | 'reverseCharge'>>) => void;
   initialSubTab?: string;
 }
 
@@ -39,6 +41,8 @@ export const GstModule: React.FC<GstModuleProps> = ({
   onGenerateFile,
   onImportSales,
   onImportPurchases,
+  onUpdateSaleClassification,
+  onUpdatePurchaseClassification,
   initialSubTab,
 }) => {
   const [activeTab, setActiveTab] = useState<'PARSER' | 'SALES' | 'PURCHASE' | 'GSTR3B' | 'RECON'>(
@@ -282,6 +286,7 @@ export const GstModule: React.FC<GstModuleProps> = ({
                     <th className="px-4 py-3">Customer Name</th>
                     <th className="px-4 py-3">GSTIN</th>
                     <th className="px-4 py-3">Type</th>
+                    <th className="px-4 py-3">RCM</th>
                     <th className="px-4 py-3">HSN</th>
                     <th className="px-4 py-3 text-right">Taxable (₹)</th>
                     <th className="px-4 py-3 text-right">IGST (₹)</th>
@@ -297,9 +302,41 @@ export const GstModule: React.FC<GstModuleProps> = ({
                       <td className="px-4 py-3 font-sans font-semibold text-slate-800">{s.customerName}</td>
                       <td className="px-4 py-3">{s.customerGstin || 'URD'}</td>
                       <td className="px-4 py-3 font-sans">
-                        <span className="text-[10px] font-bold bg-slate-100 px-2 py-0.5 rounded text-slate-700">
-                          {s.invoiceType}
-                        </span>
+                        {onUpdateSaleClassification ? (
+                          <select
+                            value={s.invoiceType}
+                            onChange={(e) => onUpdateSaleClassification(s.id, { invoiceType: e.target.value as SalesInvoice['invoiceType'] })}
+                            className="text-[10px] font-bold bg-slate-100 px-2 py-1 rounded text-slate-700 border border-slate-200 focus:ring-2 focus:ring-blue-500"
+                          >
+                            <option value="B2B">B2B</option>
+                            <option value="B2CL">B2CL</option>
+                            <option value="B2CS">B2CS</option>
+                            <option value="EXPORT">EXPORT</option>
+                            <option value="NIL_EXEMPT">NIL_EXEMPT</option>
+                            <option value="CDNR">CDNR</option>
+                          </select>
+                        ) : (
+                          <span className="text-[10px] font-bold bg-slate-100 px-2 py-0.5 rounded text-slate-700">
+                            {s.invoiceType}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 font-sans">
+                        {onUpdateSaleClassification ? (
+                          <button
+                            onClick={() => onUpdateSaleClassification(s.id, { reverseCharge: s.reverseCharge === 'Y' ? 'N' : 'Y' })}
+                            title="Reverse Charge: recipient pays this tax directly, not the supplier"
+                            className={`text-[10px] font-bold px-2 py-1 rounded border transition ${
+                              s.reverseCharge === 'Y'
+                                ? 'bg-sky-100 text-sky-800 border-sky-300'
+                                : 'bg-white text-slate-400 border-slate-200 hover:bg-slate-50'
+                            }`}
+                          >
+                            {s.reverseCharge === 'Y' ? 'RCM' : 'Normal'}
+                          </button>
+                        ) : (
+                          <span className="text-[10px] text-slate-500">{s.reverseCharge === 'Y' ? 'RCM' : '—'}</span>
+                        )}
                       </td>
                       <td className="px-4 py-3">{s.hsnCode}</td>
                       <td className="px-4 py-3 text-right font-bold text-slate-900">₹{s.taxableValue.toLocaleString('en-IN')}</td>
@@ -345,6 +382,7 @@ export const GstModule: React.FC<GstModuleProps> = ({
                     <th className="px-4 py-3">Vendor Name</th>
                     <th className="px-4 py-3">Vendor GSTIN</th>
                     <th className="px-4 py-3">ITC Status</th>
+                    <th className="px-4 py-3">RCM</th>
                     <th className="px-4 py-3 text-right">Taxable (₹)</th>
                     <th className="px-4 py-3 text-right">Total Tax / ITC (₹)</th>
                   </tr>
@@ -359,9 +397,42 @@ export const GstModule: React.FC<GstModuleProps> = ({
                         <td className="px-4 py-3 font-sans font-semibold text-slate-800">{p.vendorName}</td>
                         <td className="px-4 py-3">{p.vendorGstin}</td>
                         <td className="px-4 py-3 font-sans">
-                          <span className="text-[10px] font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded">
-                            ELIGIBLE
-                          </span>
+                          {onUpdatePurchaseClassification ? (
+                            <button
+                              onClick={() => onUpdatePurchaseClassification(p.id, { itcEligible: p.itcEligible === 'Y' ? 'N' : 'Y' })}
+                              title="Toggle ITC eligibility (e.g. Section 17(5) blocked credits should be marked ineligible)"
+                              className={`text-[10px] font-bold px-2 py-1 rounded border transition ${
+                                p.itcEligible === 'Y'
+                                  ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                                  : 'bg-red-100 text-red-800 border-red-300'
+                              }`}
+                            >
+                              {p.itcEligible === 'Y' ? 'ELIGIBLE' : 'INELIGIBLE'}
+                            </button>
+                          ) : (
+                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+                              p.itcEligible === 'Y' ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'
+                            }`}>
+                              {p.itcEligible === 'Y' ? 'ELIGIBLE' : 'INELIGIBLE'}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 font-sans">
+                          {onUpdatePurchaseClassification ? (
+                            <button
+                              onClick={() => onUpdatePurchaseClassification(p.id, { reverseCharge: p.reverseCharge === 'Y' ? 'N' : 'Y' })}
+                              title="Reverse Charge: must be paid via cash ledger, cannot be offset by ITC"
+                              className={`text-[10px] font-bold px-2 py-1 rounded border transition ${
+                                p.reverseCharge === 'Y'
+                                  ? 'bg-sky-100 text-sky-800 border-sky-300'
+                                  : 'bg-white text-slate-400 border-slate-200 hover:bg-slate-50'
+                              }`}
+                            >
+                              {p.reverseCharge === 'Y' ? 'RCM' : 'Normal'}
+                            </button>
+                          ) : (
+                            <span className="text-[10px] text-slate-500">{p.reverseCharge === 'Y' ? 'RCM' : '—'}</span>
+                          )}
                         </td>
                         <td className="px-4 py-3 text-right font-bold text-slate-900">₹{p.taxableValue.toLocaleString('en-IN')}</td>
                         <td className="px-4 py-3 text-right font-bold text-emerald-700">₹{totalTax.toLocaleString('en-IN')}</td>

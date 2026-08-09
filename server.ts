@@ -228,6 +228,18 @@ app.post('/api/sales/bulk', (req, res) => {
   res.json({ count: items.length });
 });
 
+app.patch('/api/sales/:id', (req, res) => {
+  const idx = salesInvoices.findIndex((s) => s.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Sales invoice not found' });
+  const allowedFields = ['invoiceType', 'reverseCharge'];
+  const updates: Record<string, any> = {};
+  for (const field of allowedFields) {
+    if (req.body[field] !== undefined) updates[field] = req.body[field];
+  }
+  salesInvoices[idx] = { ...salesInvoices[idx], ...updates };
+  res.json(salesInvoices[idx]);
+});
+
 // Purchase Invoices CRUD
 app.get('/api/purchases', (req, res) => {
   const { companyId } = req.query;
@@ -242,6 +254,18 @@ app.post('/api/purchases/bulk', (req, res) => {
   }));
   purchaseInvoices.push(...items);
   res.json({ count: items.length });
+});
+
+app.patch('/api/purchases/:id', (req, res) => {
+  const idx = purchaseInvoices.findIndex((p) => p.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Purchase invoice not found' });
+  const allowedFields = ['itcEligible', 'reverseCharge'];
+  const updates: Record<string, any> = {};
+  for (const field of allowedFields) {
+    if (req.body[field] !== undefined) updates[field] = req.body[field];
+  }
+  purchaseInvoices[idx] = { ...purchaseInvoices[idx], ...updates };
+  res.json(purchaseInvoices[idx]);
 });
 
 // Vendor Payments (TDS) CRUD

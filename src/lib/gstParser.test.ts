@@ -353,6 +353,72 @@ test('extractPartyName recovers just the first column when Bill To / Ship To sit
   assert.equal(extractPartyName(lines, ''), 'Miyuro Enterprises');
 });
 
+test('splitInvoiceBlocks correctly splits a multi-invoice document using a bare "#" label (Zoho Books style), not just word-based labels', async () => {
+  const { splitInvoiceBlocks } = await import('./gstParser');
+  const PDF_COLUMN_BREAK_MARKER = '\x1f';
+  // Regression: this previously found zero boundaries (the pattern only recognized word-based
+  // labels like 'Invoice No'), collapsing an entire multi-invoice PDF into a single block, from
+  // which only the first invoice's details were ever extracted.
+  const lines = [
+    'HITL Robotics Private limited',
+    'TAX INVOICE',
+    `#   :   INV/26-27/0001`,
+    'Invoice Date : 01/07/2026',
+    'Sub Total 10000',
+    'HITL Robotics Private limited',
+    'TAX INVOICE',
+    // Also verify tolerance for the PDF_COLUMN_BREAK_MARKER appearing between '#' and ':',
+    // which pdfjs's non-deterministic fallback-font width estimation can insert even for this
+    // mundane short gap (confirmed against a real generated test PDF).
+    `#  ${PDF_COLUMN_BREAK_MARKER}: ${PDF_COLUMN_BREAK_MARKER}INV/26-27/0002`,
+    'Invoice Date : 03/07/2026',
+    'Sub Total 20000',
+    'HITL Robotics Private limited',
+    'TAX INVOICE',
+    `#   :   INV/26-27/0003`,
+    'Invoice Date : 05/07/2026',
+    'Sub Total 50000',
+  ];
+
+  const blocks = splitInvoiceBlocks(lines);
+  assert.equal(blocks.length, 3);
+  assert.ok(blocks[0].some((l: string) => l.includes('INV/26-27/0001')));
+  assert.ok(blocks[1].some((l: string) => l.includes('INV/26-27/0002')));
+  assert.ok(blocks[2].some((l: string) => l.includes('INV/26-27/0003')));
+});
+
+test('parses all invoices from a real-structured multi-invoice PDF text, not just the first', async () => {
+  const { parseTextInvoice } = await import('./gstParser');
+  const buildInvoice = (num: string, date: string, taxable: number, tax: number) => [
+    'HITL Robotics Private limited',
+    'TAX INVOICE',
+    `#   :   ${num}`,
+    `Invoice Date   :   ${date}`,
+    'Bill To',
+    'Some Customer Pvt Ltd',
+    'GSTIN 09AACCH1234F1Z5',
+    '# Item & Description HSN/SAC Qty Rate',
+    `1 Consulting Services 998313 1 ${taxable}`,
+    `Sub Total ${taxable}`,
+    `IGST18 (18%) ${tax}`,
+    `Total Rs.${(taxable + tax).toLocaleString('en-IN')}`,
+  ].join('\n');
+
+  const combined = [
+    buildInvoice('INV/26-27/0001', '01/07/2026', 10000, 1800),
+    buildInvoice('INV/26-27/0002', '03/07/2026', 20000, 3600),
+    buildInvoice('INV/26-27/0003', '05/07/2026', 50000, 9000),
+  ].join('\n');
+
+  const result = parseTextInvoice(combined, 'GSTR1', 'C1', '09');
+  assert.equal(result.salesInvoices.length, 3);
+  assert.deepEqual(
+    result.salesInvoices.map((s) => s.invoiceNo),
+    ['INV/26-27/0001', 'INV/26-27/0002', 'INV/26-27/0003']
+  );
+  assert.deepEqual(result.salesInvoices.map((s) => s.taxableValue), [10000, 20000, 50000]);
+});
+
 test('a genuinely parsed file is never flagged as sample data', async () => {
   const csv = [
     'Invoice No.,Invoice Date,Customer Name,GSTIN/UIN,Taxable Value',

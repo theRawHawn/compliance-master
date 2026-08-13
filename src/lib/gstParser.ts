@@ -485,7 +485,7 @@ export async function parseGstFile(
   return result;
 }
 
-function parseTextInvoice(
+export function parseTextInvoice(
   text: string,
   targetType: 'GSTR1' | 'GSTR2B' | 'GSTR3B',
   companyId: string,
@@ -607,9 +607,19 @@ function parseTextInvoice(
   return { salesInvoices, purchaseInvoices, totalTaxable, totalTax, errors };
 }
 
-function splitInvoiceBlocks(lines: string[]): string[][] {
+export function splitInvoiceBlocks(lines: string[]): string[][] {
   const boundaries: number[] = [];
-  const invoicePattern = /(?:^|\s)(?:invoice\s+(?:no|number|no\.|id|ref)|bill\s+(?:no|number|no\.|id|ref)|voucher\s+(?:no|number|no\.|id|ref)|doc\s+(?:no|number|no\.|id|ref)|ref\s+(?:no|number|no\.|id|ref))(?:\s*[:#=-]?\s*)([A-Z0-9\/\-]{2,40})/i;
+  // '\x1f' (PDF_COLUMN_BREAK_MARKER) must be treated as equivalent to whitespace here: pdfjs's
+  // fallback-font width estimation (see the 'standardFontDataUrl' warning) is not fully
+  // deterministic, and can insert this marker between closely-related label components (e.g.
+  // between '#' and the ':' that follows it) even for a mundane short gap that was never meant
+  // to signal a genuine multi-column layout -- if this pattern only accepted \s, that would
+  // silently fail to match for a subset of real PDFs depending on font-rendering fallback
+  // behavior. The '#:' alternative catches invoicing platforms (e.g. Zoho Books) that label the
+  // invoice number with a bare '#' character rather than a word like 'Invoice No'; requiring the
+  // colon after '#' distinguishes this from other '#'-prefixed lines in the same documents, such
+  // as a '# Item & Description ...' table header with no colon.
+  const invoicePattern = /(?:^|[\s\x1f])(?:invoice[\s\x1f]+(?:no|number|no\.|id|ref)|bill[\s\x1f]+(?:no|number|no\.|id|ref)|voucher[\s\x1f]+(?:no|number|no\.|id|ref)|doc[\s\x1f]+(?:no|number|no\.|id|ref)|ref[\s\x1f]+(?:no|number|no\.|id|ref)|#[\s\x1f]*:)(?:[\s\x1f]*[:#=\-\x1f]*)([A-Z0-9\/\-]{2,40})/i;
 
   lines.forEach((line, idx) => {
     if (invoicePattern.test(line)) {
